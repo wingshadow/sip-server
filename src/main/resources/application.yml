@@ -1,0 +1,144 @@
+server:
+  port: 8080
+
+sip:
+  server:
+    # SIP 服务器 20 位国标编码（前 10 位为域编码，后 10 位为 2xxxxxxx/1xxxxxxx 类型编码）
+    id: 34020000002000000001
+    # 监听地址与端口（UDP）
+    host: 0.0.0.0
+    port: 5060
+    # 对外通告 IP：用于注册响应 Contact 与点播 SDP 中携带，需为摄像头可达的地址
+    ip: 192.168.8.104
+    # 设备心跳超时（秒），超过则视为离线
+    heartbeat-timeout: 180
+
+    # ===== SIP 注册鉴权（Digest，RFC 2617 / GB/T 28181）=====
+    # 设备密码：留空则任何设备均可注册（跳过鉴权，默认行为）。
+    # 配置后首次 REGISTER 将收到 401 + WWW-Authenticate 挑战，
+    # 设备需在摄像头侧把"注册密码"配成与这里一致，才能鉴权通过。
+    password: 12345678
+    # 按设备编号单独指定密码，优先级高于上面的全局 password；
+    # key 为设备 20 位国标编码，"*" 为通配默认密码。示例：
+    # device-passwords:
+    #   34020000001320000002: "your-device-pwd"
+    #   "*": "your-default-pwd"
+    # 鉴权开关（可选）：不配则按 password 是否为空自动判断；
+    # 置 false 可临时关闭鉴权而不必删除密码配置
+    # auth-enabled: true
+    # Digest nonce 有效期（秒）：设备需在期内携带 Authorization 重试 REGISTER，
+    # 超时后平台以 stale=true 重新挑战，默认 300
+    # nonce-ttl-seconds: 300
+
+    # ===== 直播会话保活（默认关闭）=====
+    # 部分设备侧会话超时（常见 300s+）会清理长时间无信令交互的 INVITE Dialog，
+    # 导致 7×24 长直播媒体莫名中断。启用后按间隔向设备发会话内空 INFO 刷新 Dialog
+    # （不改 SDP 协商、不触发媒体重指）；发送失败仅记日志、不拆会话。
+    # 注意：仅 local 媒体模式生效（zlm 模式流保活由 ZLMediaKit 负责）；
+    #       间隔应显著小于设备侧会话超时（默认 60s 对 300s+ 有 5 倍余量）
+    # session-keepalive-enabled: false
+    # session-keepalive-seconds: 60
+
+    # ===== 告警 HTTP 外发（Webhook，默认关闭）=====
+    # 启用后设备告警（MANSCDP MESSAGE 上报 + NOTIFY 订阅事件）以 JSON POST
+    # 异步推送到目标 URL。异步入队、单线程消费、有界队列（2048），
+    # 队列满丢弃最旧事件并告警——SIP 信令线程永不被阻塞。
+    # payload: {deviceId, source, alarmPriority, alarmMethod, alarmTime,
+    #           alarmDescription, alarmType}（null 字段自动剔除）
+    # alarm-webhook-enabled: false
+    # alarm-webhook-url: http://ops.example.com/api/gb28181/alarm
+    # alarm-webhook-timeout-ms: 3000
+
+  media:
+    # 媒体面模式：local=自研链路（RtpPortPool+ffmpeg+FLV 广播）；zlm=ZLMediaKit 接管媒体面
+    mode: local
+    # 自研链路：每个点播/回放/下载会话从端口池独占一个 UDP 端口，
+    # RtpReceiver 按 SSRC / 源 IP:端口 / Call-ID 分发，支持多台摄像机同时推流。
+    # 注意：本范围不得与下方语音端口池重叠（语音池默认 30100 起）。
+    local:
+      port-pool-start: 30000
+      port-pool-end: 30099
+      # 录像下载倍速（GB/T 28181-2022 SDP a=downloadspeed）：
+      # INVITE 携带 a=downloadspeed:N 协商，会话建立后再经 SIP INFO
+      # （Application/MANSRTSP）下发 SCALE N 兜底；设备不支持时按 1x 推流。
+      # 注意：倍速是"时间轴倍速"不是"文件压缩率"——收到仍是完整录像
+      # （时长/体积基本不变），只是传输耗时缩短为 1/N，而设备侧读卡+
+      # 解码+发送代价线性上升，低端 IPC 设 4 易宕机，建议 1~2
+      download-speed: 2
+      # 下载 MP4 转码参数（保持设备原始分辨率，仅调码率控制压缩体积）：
+      # preset 为 x264 速度档，medium 在离线转码（非实时）下体积最优，
+      # 多路并发可退 veryfast/faster；crf 为恒定质量 0~51，越小越清晰
+      # 体积越大，26 对监控内容约比旧默认（CRF23+ultrafast）小 40~55%
+      download-preset: medium
+      download-crf: 26
+      # 下载会话是否额外下发 MANSRTSP PLAY（默认 false）：
+      # 设备 ACK 后已开始推流时无需 PLAY；仅设备要求先 PLAY 才推流时开启，
+      # 中途 PLAY 有被设备视为 seek 重推导致时间跳变的风险
+      download-mansrtsp-play: false
+      # 回放/下载会话 RTP 空闲阈值（秒）：设备静默停推（不发 BYE）时，
+      # 超过该时长无新 RTP 包即主动 BYE 收尾，ffmpeg 写 moov 落盘，
+      # 避免下载卡在进度上限不动；首包宽限为该值 4 倍（下限 60s）
+      download-idle-seconds: 15
+
+    zlm:
+      # ZLM HTTP API 基地址（/index/api/...）
+      api-base: http://127.0.0.1:9092
+      # ZLM API secret（config.ini 中 api.secret）
+      secret: DXk5jeYpsn9P4wLApVFi5tvLFV7UabtM
+      # SDP 通告 IP：摄像头把 RTP 推到该 ZLM 地址（需摄像头可达）
+      media-ip: 192.168.8.104
+      # ZLM HTTP 播放端口（FLV / HLS / WebSocket 分发）
+      http-port: 9092
+      # 浏览器播放地址主机（默认取 api-base 的 host，可按网络拓扑覆盖）
+      # play-host: 192.168.8.104
+      # openRtpServer 流应用名
+      rtp-port: 30002
+      rtp-app: rtp
+      rtsp-port: 554
+      rtmp-port: 1935
+
+  voice:
+    # 语音 RTP 端口池（多端口模式）：每个语音会话独占一个 UDP 端口，
+    # 200 OK answer SDP 的 m=audio 通告该端口，支持多台设备同时对讲。
+    # 注意：本范围不得与上方媒体端口池重叠（媒体池默认到 30099 止）。
+    port-pool-start: 30100
+    port-pool-end: 30150
+    enabled: true
+
+
+  # 对外 Open API（/api/v1/**）安全配置
+  openapi:
+    # 是否启用 API Key 鉴权（false 则直接放行，仅建议内网隔离环境关闭）
+    enabled: true
+    # 合法 API Key 列表：请求头 X-API-Key 需与其中之一匹配
+    # 未配置任何 key 时鉴权自动放行（向后兼容），生产环境务必配置
+    api-keys:
+      - 9f2c7a51e4b84d0f8a3c6d5e2f1b0a99
+
+# ===== 可观测性（spring-boot-starter-actuator）=====
+# 指标采集实现见 com.example.sip.monitor.SipMetrics（sip.* 前缀 gauge）
+management:
+  endpoints:
+    web:
+      exposure:
+        # 显式白名单：health/info/metrics。绝不加入 shutdown（可被直接调用终止服务）
+        include: health,info,metrics
+  endpoint:
+    health:
+      # 显示各 HealthIndicator 明细（本项目无 DB/Redis 依赖，恒为 UP）
+      show-details: always
+  # 如需与业务端口隔离（防火墙只放行 8080 时监控走内网另一口），取消注释：
+  # server:
+  #   port: 8090
+
+logging:
+  level:
+    com.example.sip: info
+  file:
+    name: ./logs/sip.log
+
+
+app:
+  # HLS 切片输出目录（ffmpeg 转码产物，页面通过 /hls/** 访问）
+  hls-dir: ./hls
+

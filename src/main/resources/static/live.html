@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>实时预览 · GB/T 28181 SIP 视频平台</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="container">
+
+    <div id="nav"></div>
+
+    <div class="card">
+        <div class="title"><span class="dot"></span>实时预览（GB/T 28181-2022 实时点播）</div>
+
+        <div class="toolbar">
+            <select id="liveDevice">
+                <option value="">请选择设备</option>
+            </select>
+
+            <input id="liveChannel" type="text" placeholder="通道 ID（留空=设备 ID）"
+                   style="height:36px;padding:0 10px;border:1px solid #dcdfe6;border-radius:6px;min-width:220px">
+
+            <button class="btn primary" onclick="startLive()">开始直播</button>
+            <button class="btn danger" onclick="stopLive()">停止直播</button>
+
+            <span id="liveInfo" class="muted"></span>
+        </div>
+
+        <div class="toolbar" style="margin-top:10px">
+            <span class="muted">媒体模式：<b id="mediaMode">local</b>；local 模式经多端口 RTP + ffmpeg 转 FLV，zlm 模式委托 ZLMediaKit</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title"><span class="dot" style="background:#16a34a"></span>播放器</div>
+
+        <div class="preview">
+            <video id="video" controls playsinline muted></video>
+        </div>
+
+        <div class="preview-bar">
+            <span id="playUrl" class="url">尚未开始直播</span>
+            <button class="btn gray" onclick="destroyPlayer()">关闭播放器</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title"><span class="dot" style="background:#7c3aed"></span>云台控制（MANSCDP DeviceControl）</div>
+
+        <div class="toolbar" style="margin-bottom:14px">
+            <span class="muted">当前目标：设备 <b id="ptzDevice">-</b> · 通道 <b id="ptzChannel">-</b>（与上方预览选择联动；单通道摄像头通道=设备 ID）</span>
+        </div>
+
+        <div class="ptz-wrap">
+            <div class="ptz-pad">
+                <span></span>
+                <button class="ptz-btn" data-action="up" title="上仰">▲</button>
+                <span></span>
+                <button class="ptz-btn" data-action="left" title="左转">◀</button>
+                <button class="ptz-btn stop" data-action="stop" title="停止">■</button>
+                <button class="ptz-btn" data-action="right" title="右转">▶</button>
+                <span></span>
+                <button class="ptz-btn" data-action="down" title="下俯">▼</button>
+                <span></span>
+            </div>
+
+            <div class="ptz-side">
+                <div class="toolbar">
+                    <button class="btn gray ptz-optical" data-action="zoomIn">变倍 +</button>
+                    <button class="btn gray ptz-optical" data-action="zoomOut">变倍 −</button>
+                    <button class="btn gray ptz-optical" data-action="focusNear">聚焦近</button>
+                    <button class="btn gray ptz-optical" data-action="focusFar">聚焦远</button>
+                </div>
+
+                <div class="speed-row">
+                    <span class="muted">速度</span>
+                    <input id="ptzSpeed" type="range" min="1" max="255" value="100">
+                    <b id="ptzSpeedVal">100</b>
+                </div>
+
+                <div class="toolbar">
+                    <span class="muted">预置位</span>
+                    <input id="presetId" type="number" min="1" max="255" value="1"
+                           style="width:80px;height:36px;padding:0 10px;border:1px solid #dcdfe6;border-radius:6px">
+                    <button class="btn success" onclick="presetOp('set')">设置</button>
+                    <button class="btn primary" onclick="presetOp('call')">调用</button>
+                    <button class="btn danger" onclick="presetOp('delete')">删除</button>
+                </div>
+
+                <div id="ptzInfo" class="muted" style="margin-top:12px">
+                    按住方向/光学按钮持续动作，松开自动补发停止；倍速类取 1~15 档。设备以 SIP 200 OK 应答即视为下发成功
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title"><span class="dot" style="background:#2878f0"></span>直播会话</div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>设备 ID</th>
+                    <th>通道 ID</th>
+                    <th>SSRC</th>
+                    <th>状态</th>
+                    <th>RTP 端口</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                </tr>
+                </thead>
+
+                <tbody id="sessionBody">
+                <tr>
+                    <td colspan="7" class="muted">暂无直播会话</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="footer">
+        sip-server · GB/T 28181-2022 接入测试 · 每 5 秒自动刷新
+    </div>
+
+</div>
+
+<script src="/js/mpegts.min.js"></script>
+<script src="/js/ZLMRTCClient.js"></script>
+<script src="/js/auth.js"></script>
+<script src="/js/common.js"></script>
+
+<script>
+    let player = null;
+    let playerKind = null;   // 'mpegts' | 'rtc'
+
+    const params = urlParams();
+    const urlDeviceId = params.get('deviceId') || '';
+
+    function $(id){
+        return document.getElementById(id);
+    }
+
+    /* zlm 模式下 flvUrl 为 http-flv，统一转换为 ws-flv 供 mpegts.js 播放（免 CORS） */
+    function toPlayableUrl(url){
+        if(!url){
+            return '';
+        }
+
+        if(isZlmMode()){
+            return url.replace(/^http:\/\//, 'ws://');
+        }
+
+        return url;
+    }
+
+    async function startLive(){
+        const deviceId = $('liveDevice').value;
+        const channelId = $('liveChannel').value.trim() || deviceId;
+
+        if(!deviceId){
+            alert('请先选择设备');
+            return;
+        }
+
+        try{
+            const r = await postJson('/api/play/start', {deviceId, channelId});
+
+            // code 不存在视为成功（后端成功响应不返回 code，与 1.0 契约一致）
+            if(r.code!==undefined&&Number(r.code)!==0){
+                alert('开始直播失败: ' + (r.message || '未知错误'));
+                return;
+            }
+
+            $('liveInfo').textContent =
+                '会话已创建：deviceId=' + deviceId + ' channelId=' + channelId + ' ssrc=' + (r.ssrc || '-');
+
+            if(isZlmMode()){
+                /* zlm 模式走 WebRTC：设备 PS 内嵌 G.711a(PCMA)，
+                   mpegts.js/MSE 不支持该音频编码（CodecUnsupported），
+                   浏览器原生 WebRTC 支持 PCMA，音视频均可解码 */
+                $('playUrl').textContent = 'WebRTC 连接中...';
+
+                const w = await fetchJson('/api/play/webrtc-url?deviceId='
+                    + encodeURIComponent(deviceId)
+                    + '&channelId=' + encodeURIComponent(channelId));
+
+                if(w.error){
+                    $('playUrl').textContent = '播放出错: ' + w.error;
+                    return;
+                }
+
+                playWebrtc(w.webrtcUrl);
+            }else{
+                playFlv(r.flvUrl || r.liveFlvUrl);
+            }
+
+            refreshSessions();
+
+        }catch(e){
+            alert('开始直播异常: ' + e.message);
+        }
+    }
+
+    async function stopLive(){
+        const deviceId = $('liveDevice').value;
+        const channelId = $('liveChannel').value.trim() || deviceId;
+
+        if(!deviceId){
+            return;
+        }
+
+        try{
+            await postJson('/api/play/stop', {deviceId, channelId});
+
+            $('liveInfo').textContent = '已发送停止请求';
+
+            destroyPlayer();
+            refreshSessions();
+
+        }catch(e){
+            alert('停止直播异常: ' + e.message);
+        }
+    }
+
+    async function stopSession(deviceId, channelId){
+        try{
+            await postJson('/api/play/stop', {deviceId, channelId});
+
+            refreshSessions();
+
+        }catch(e){
+            alert('停止会话异常: ' + e.message);
+        }
+    }
+
+    function playFlv(url){
+        const playable = toPlayableUrl(url);
+
+        destroyPlayer();
+
+        if(!playable){
+            return;
+        }
+
+        /* mseFlvSupported 兼容内置旧版 mpegts.min.js（能力键为 msePlayback），
+           直接读 mseFlvPlayback 会恒为 undefined 导致误报不支持 */
+        if(!mseFlvSupported()){
+            $('playUrl').textContent = '浏览器不支持 MSE FLV 播放: ' + playable;
+            return;
+        }
+
+        try{
+            player = mpegts.createPlayer({
+                type: 'flv',
+                isLive: true,
+                url: playable
+            }, {
+                enableStashBuffer: false,
+                stashInitialSize: 128,
+                lazyLoad: false,
+                autoCleanupSourceBuffer: true,
+                liveBufferLatencyChasing: true
+            });
+
+            player.attachMediaElement($('video'));
+
+            player.on(mpegts.Events.ERROR, (type, detail, info)=>{
+                console.error('[FLV] ERROR', type, detail, info);
+                $('playUrl').textContent = '播放出错: ' + (detail || type);
+            });
+
+            player.on(mpegts.Events.MEDIA_INFO, info=>{
+                console.log('[FLV] MEDIA_INFO', info);
+            });
+
+            player.load();
+
+            player.play().catch(()=>{
+                /* 自动播放被浏览器拦截：静音态下通常可播，失败时由用户点击 video 播放 */
+            });
+
+            $('playUrl').textContent = playable;
+
+        }catch(e){
+            $('playUrl').textContent = '播放失败: ' + e.message;
+        }
+    }
+
+    /* zlm 模式 WebRTC 播放：ZLMRTCClient 封装 WHEP 信令，
+       浏览器原生解码 H.264 + PCMA（无需 wasm 解码器） */
+    function playWebrtc(url){
+        destroyPlayer();
+
+        if(!url){
+            $('playUrl').textContent = 'WebRTC 地址为空';
+            return;
+        }
+
+        try{
+            player = new ZLMRTCClient.Endpoint({
+                element: $('video'),
+                debug: false,
+                zlmsdpUrl: url,
+                simulcast: false,
+                useCamera: false,
+                audioEnable: true,
+                videoEnable: true,
+                recvOnly: true,
+                usedatachannel: false
+            });
+            playerKind = 'rtc';
+        }catch(e){
+            $('playUrl').textContent = '播放失败: ' + e.message;
+            return;
+        }
+
+        player.on(ZLMRTCClient.Events.WEBRTC_ON_REMOTE_STREAMS, ()=>{
+            $('playUrl').textContent = 'WebRTC 播放中: ' + url;
+        });
+
+        player.on(ZLMRTCClient.Events.WEBRTC_OFFER_ANWSER_EXCHANGE_FAILED, e=>{
+            console.error('[RTC] offer/answer 交换失败', e);
+            $('playUrl').textContent = '播放出错: 信令交换失败 ' + ((e && e.msg) || '');
+        });
+
+        player.on(ZLMRTCClient.Events.WEBRTC_ICE_CANDIDATE_ERROR, e=>{
+            console.error('[RTC] ICE 协商错误', e);
+            $('playUrl').textContent =
+                '播放出错: ICE 协商失败（检查 ZLM [rtc] 端口 8000 的 UDP 是否放行）';
+        });
+    }
+
+    function destroyPlayer(){
+        if(player){
+            try{
+                if(playerKind === 'rtc'){
+                    player.close();
+                }else{
+                    player.pause();
+                    player.unload();
+                    player.detachMediaElement();
+                    player.destroy();
+                }
+            }catch(e){}
+
+            player = null;
+            playerKind = null;
+        }
+
+        $('playUrl').textContent = '尚未开始直播';
+    }
+
+    async function refreshSessions(){
+        try{
+            const status = await fetchJson('/api/status');
+            applyStatus(status);
+        }catch(e){
+            console.warn('[STATUS]', e);
+        }
+
+        try{
+            const sessions = await fetchJson('/api/play/sessions') || [];
+
+            const body = $('sessionBody');
+
+            if(!sessions.length){
+                body.innerHTML =
+                    '<tr><td colspan="7" class="muted">暂无直播会话</td></tr>';
+                return;
+            }
+
+            body.innerHTML = sessions.map(s=>
+                '<tr>'+
+                '<td>'+esc(s.deviceId)+'</td>'+
+                '<td>'+esc(s.channelId)+'</td>'+
+                '<td class="url">'+esc(s.ssrc||'-')+'</td>'+
+                '<td>'+stateTag(s.state)+'</td>'+
+                '<td>'+esc(s.localPort||'-')+'</td>'+
+                '<td>'+formatEpoch(s.createTime)+'</td>'+
+                '<td>'+
+                    '<button class="btn danger" onclick="stopSession(\''+
+                    esc(s.deviceId)+'\',\''+
+                    esc(s.channelId)+'\')">停止</button>'+
+                '</td>'+
+                '</tr>'
+            ).join('');
+
+        }catch(e){
+            console.warn('[SESSION]', e);
+        }
+    }
+
+    /* ===== 云台控制 =====
+     * GB/T 28181 PTZ 指令为"持续速度指令"：设备按速度持续动作直到收到
+     * 停止命令，因此 UI 采用「按住动作、松开自动补发 stop」，
+     * 否则球机会一直转到预置位边界或看门狗超时。 */
+    let ptzMoving = false;
+
+    function ptzTarget(){
+        const deviceId = $('liveDevice').value;
+        return {
+            deviceId,
+            channelId: $('liveChannel').value.trim() || deviceId
+        };
+    }
+
+    function refreshPtzTarget(){
+        const t = ptzTarget();
+        $('ptzDevice').textContent = t.deviceId || '-';
+        $('ptzChannel').textContent = t.channelId || '-';
+    }
+
+    async function sendPtz(action){
+        const t = ptzTarget();
+
+        if(!t.deviceId){
+            $('ptzInfo').textContent = '请先选择设备';
+            return;
+        }
+
+        const speed = parseInt($('ptzSpeed').value, 10) || 100;
+
+        try{
+            const r = await postJson(
+                '/api/devices/'+encodeURIComponent(t.deviceId)+
+                '/channels/'+encodeURIComponent(t.channelId)+'/ptz',
+                {action, speed});
+
+            if(r && r.code!==undefined && Number(r.code)!==0){
+                $('ptzInfo').textContent = '控制失败: ' + (r.message || '未知错误');
+                return;
+            }
+
+            $('ptzInfo').textContent = '已下发 '+action+
+                (r && r.ptzCmd ? '（PTZCmd='+r.ptzCmd+'）' : '');
+
+        }catch(e){
+            $('ptzInfo').textContent = '控制异常: ' + e.message;
+        }
+    }
+
+    /* 预置位：设置/调用/删除 */
+    async function presetOp(op){
+        const t = ptzTarget();
+        const presetId = parseInt($('presetId').value, 10);
+
+        if(!t.deviceId){
+            alert('请先选择设备');
+            return;
+        }
+
+        if(!Number.isFinite(presetId) || presetId<1 || presetId>255){
+            alert('预置位号须在 1~255');
+            return;
+        }
+
+        try{
+            const r = await postJson(
+                '/api/devices/'+encodeURIComponent(t.deviceId)+
+                '/channels/'+encodeURIComponent(t.channelId)+'/preset',
+                {op, presetId});
+
+            if(r && r.code!==undefined && Number(r.code)!==0){
+                alert('预置位操作失败: ' + (r.message || '未知错误'));
+                return;
+            }
+
+            $('ptzInfo').textContent = '预置位 '+op+' #'+presetId+' 已下发';
+
+        }catch(e){
+            alert('预置位操作异常: ' + e.message);
+        }
+    }
+
+    /* 方向盘/光学按钮：pointerdown 发指令，松开/移出/中断补发 stop。
+       stop 按钮自身即停止，不参与按压逻辑 */
+    function bindPtzButtons(){
+        document.querySelectorAll('.ptz-btn,.ptz-optical').forEach(btn=>{
+            const action = btn.dataset.action;
+
+            if(action === 'stop'){
+                btn.addEventListener('click', ()=>sendPtz('stop'));
+                return;
+            }
+
+            btn.addEventListener('pointerdown', e=>{
+                e.preventDefault();
+                btn.classList.add('on');
+                ptzMoving = true;
+                sendPtz(action);
+            });
+
+            const release = ()=>{
+                btn.classList.remove('on');
+
+                /* 只有仍处于按压态才补发停止：pointerleave 先触发后
+                   pointerup 再来时不能发第二次（避免指令抖动） */
+                if(ptzMoving){
+                    ptzMoving = false;
+                    sendPtz('stop');
+                }
+            };
+
+            btn.addEventListener('pointerup', release);
+            btn.addEventListener('pointerleave', release);
+            btn.addEventListener('pointercancel', release);
+        });
+    }
+
+    /* 初始化：设备下拉 + URL 预选 */
+    renderNav('live');
+
+    $('ptzSpeed').addEventListener('input', ()=>{
+        $('ptzSpeedVal').textContent = $('ptzSpeed').value;
+    });
+
+    $('liveDevice').addEventListener('change', refreshPtzTarget);
+    $('liveChannel').addEventListener('input', refreshPtzTarget);
+
+    fillDeviceSelect($('liveDevice')).then(()=>{
+        if(urlDeviceId){
+            $('liveDevice').value = urlDeviceId;
+            $('liveChannel').value = urlDeviceId;
+        }
+
+        refreshPtzTarget();
+    });
+
+    bindPtzButtons();
+    refreshPtzTarget();
+
+    refreshSessions();
+
+    setInterval(refreshSessions, 5000);
+
+    window.addEventListener('beforeunload', ()=>{
+        destroyPlayer();
+    });
+</script>
+
+</body>
+</html>

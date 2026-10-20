@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>语音对讲 · GB/T 28181 SIP 视频平台</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="container">
+
+    <div id="nav"></div>
+
+    <div class="card">
+        <div class="title"><span class="dot"></span>语音对讲 / 语音广播（GB/T 28181-2022 语音对讲控制）</div>
+
+        <div class="toolbar">
+            <select id="voiceDevice">
+                <option value="">请选择设备</option>
+            </select>
+
+            <input id="voiceChannel" type="text" placeholder="通道 ID（留空=设备 ID）"
+                   style="height:36px;padding:0 10px;border:1px solid #dcdfe6;border-radius:6px;min-width:220px">
+
+            <button class="btn voice" onclick="startVoice('talk')">开始对讲</button>
+            <button class="btn primary" onclick="startVoice('broadcast')">开始广播</button>
+
+            <span id="voiceInfo" class="muted">对讲需指定通道；广播对设备全体通道喊话</span>
+            <span class="muted">媒体模式：<b id="mediaMode">-</b>（语音对讲为平台直连 RTP，
+                不经过 ZLM/local 媒体链路，两种模式下用法相同）</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title"><span class="dot" style="background:#2878f0"></span>语音会话</div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>设备 ID</th>
+                    <th>通道 ID</th>
+                    <th>类型</th>
+                    <th>状态</th>
+                    <th>SSRC</th>
+                    <th>设备收流地址</th>
+                    <th>本机端口</th>
+                    <th>已发包</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                </tr>
+                </thead>
+
+                <tbody id="voiceBody">
+                <tr>
+                    <td colspan="10" class="muted">暂无语音会话</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="footer">
+        sip-server · GB/T 28181-2022 接入测试 · 每 5 秒自动刷新
+    </div>
+
+</div>
+
+<script src="/js/auth.js"></script>
+<script src="/js/common.js"></script>
+
+<script>
+    const params = urlParams();
+    const urlDeviceId = params.get('deviceId') || '';
+
+    function $(id){
+        return document.getElementById(id);
+    }
+
+    /*
+     * 开始语音会话。
+     *
+     * mode='talk'      → 平台主动 INVITE，s=PlayTalk 双向对讲；
+     * mode='broadcast' → 平台主动广播：MESSAGE 通知 + s=Broadcast INVITE，
+     *                    单向喊话（设备侧另一条代码路径，可绕开部分设备
+     *                    把对讲误判为点播的问题）。成功后返回 wsUrl，
+     *                    写入 sessionStorage 供对讲页连接。
+     */
+    async function startVoice(mode){
+        const deviceId = $('voiceDevice').value;
+
+        if(!deviceId){
+            alert('请先选择设备');
+            return;
+        }
+
+        const channelId = $('voiceChannel').value.trim() || deviceId;
+
+        const body = {deviceId, channelId, mode};
+
+        try{
+            const r = await postJson('/api/voice/start', body);
+
+            // code 不存在视为成功（后端成功响应不返回 code，与 1.0 契约一致）
+            if(r.code!==undefined&&Number(r.code)!==0){
+                alert('开始失败: ' + (r.message || '未知错误'));
+                return;
+            }
+
+            sessionStorage.setItem('voiceWsUrl', r.wsUrl || '');
+            sessionStorage.setItem('voiceDeviceId', deviceId);
+            sessionStorage.setItem('voiceChannelId', channelId);
+            sessionStorage.setItem('voiceBroadcast', mode === 'broadcast' ? '1' : '0');
+            sessionStorage.setItem('voiceCallId', r.callId || '');
+            sessionStorage.setItem('voiceLocalPort', String(r.localPort || ''));
+
+            location.href = '/voice-talk.html';
+
+        }catch(e){
+            alert('开始异常: ' + e.message);
+        }
+    }
+
+    async function stopVoice(deviceId, channelId){
+        try{
+            await postJson('/api/voice/stop', {deviceId, channelId});
+
+            refreshSessions();
+
+        }catch(e){
+            alert('停止异常: ' + e.message);
+        }
+    }
+
+    /* 从会话列表进入既有对讲（重建 sessionStorage 供对讲页使用） */
+    function enterVoice(s){
+        const wsUrl = '/ws/voice?deviceId=' + encodeURIComponent(s.deviceId) +
+            (s.channelId ? '&channelId=' + encodeURIComponent(s.channelId) : '');
+
+        sessionStorage.setItem('voiceWsUrl', wsUrl);
+        sessionStorage.setItem('voiceDeviceId', s.deviceId || '');
+        sessionStorage.setItem('voiceChannelId', s.channelId || '');
+        sessionStorage.setItem('voiceBroadcast', s.channelId ? '0' : '1');
+        sessionStorage.setItem('voiceCallId', s.callId || '');
+        sessionStorage.setItem('voiceLocalPort', String(s.localPort || ''));
+
+        location.href = '/voice-talk.html';
+    }
+
+    async function refreshSessions(){
+        try{
+            const status = await fetchJson('/api/status');
+            applyStatus(status);
+        }catch(e){
+            console.warn('[STATUS]', e);
+        }
+
+        try{
+            const r = await fetchJson('/api/voice/sessions');
+
+            const list = (r && r.list) || [];
+
+            const body = $('voiceBody');
+
+            if(!list.length){
+                body.innerHTML =
+                    '<tr><td colspan="10" class="muted">暂无语音会话</td></tr>';
+                return;
+            }
+
+            body.innerHTML = list.map(s=>{
+                const broadcast = !!s.broadcast;
+
+                return '<tr>'+
+                    '<td>'+esc(s.deviceId)+'</td>'+
+                    '<td>'+esc(s.channelId||'（广播）')+'</td>'+
+                    '<td>'+esc(broadcast?'广播':'对讲')+'</td>'+
+                    '<td>'+stateTag(s.state, s.stopReason)+'</td>'+
+                    '<td class="url">'+esc(s.ssrc||'-')+'</td>'+
+                    '<td>'+
+                        (s.audioIp
+                            ? esc(s.audioIp)+':'+esc(s.audioPort||'-')
+                            : '<span class="muted">等待应答</span>')+
+                    '</td>'+
+                    '<td>'+esc(s.localPort||'-')+'</td>'+
+                    '<td>'+esc(s.packetsSent||0)+'</td>'+
+                    '<td>'+formatEpoch(s.createTime)+'</td>'+
+                    '<td>'+
+                        (s.state === 'TALKING'
+                            ?'<button class="btn primary" onclick="enterVoice('+
+                              JSON.stringify(s).replace(/'/g,"&#39;")+')">进入</button> '
+                            :'')+
+                        '<button class="btn danger" onclick="stopVoice(\''+
+                        esc(s.deviceId)+'\',\''+
+                        esc(s.channelId||'')+'\')">停止</button>'+
+                    '</td>'+
+                    '</tr>';
+            }).join('');
+
+        }catch(e){
+            console.warn('[VOICE]', e);
+        }
+    }
+
+    renderNav('voice');
+
+    fillDeviceSelect($('voiceDevice')).then(()=>{
+        if(urlDeviceId){
+            $('voiceDevice').value = urlDeviceId;
+            $('voiceChannel').value = urlDeviceId;
+        }
+    });
+
+    refreshSessions();
+
+    setInterval(refreshSessions, 5000);
+</script>
+
+</body>
+</html>

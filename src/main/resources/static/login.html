@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>登录 · GB/T 28181 SIP 视频平台</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="login-wrap">
+    <div class="card login-card">
+        <h1>GB/T 28181 SIP 视频平台</h1>
+        <p class="muted login-tip">请登录后使用</p>
+        <form id="loginForm" autocomplete="on" novalidate>
+            <div class="form-row">
+                <label for="username">用户名</label>
+                <input id="username" name="username" type="text" placeholder="请输入用户名" required autofocus>
+            </div>
+            <div class="form-row">
+                <label for="password">密码</label>
+                <input id="password" name="password" type="password" placeholder="请输入密码" required>
+            </div>
+            <div class="form-row">
+                <button id="submitBtn" class="btn primary" type="submit">登 录</button>
+            </div>
+            <div id="loginError" class="error login-error"></div>
+        </form>
+    </div>
+</div>
+
+<script>
+    /* 登录提交：成功回跳 next（默认 index.html），失败提示原因 */
+    (function(){
+        const form=document.getElementById('loginForm');
+        const userInput=document.getElementById('username');
+        const passInput=document.getElementById('password');
+        const submitBtn=document.getElementById('submitBtn');
+        const errorBox=document.getElementById('loginError');
+
+        /* 仅允许站内相对路径，防开放重定向 */
+        function safeNext(){
+            const next=new URLSearchParams(location.search).get('next');
+
+            if(next&&next.startsWith('/')&&!next.startsWith('//')){
+                return next;
+            }
+
+            return '/index.html';
+        }
+
+        function showError(msg){
+            errorBox.textContent=msg||'登录失败，请重试';
+            errorBox.style.display='block';
+        }
+
+        form.addEventListener('submit',function(e){
+            e.preventDefault();
+
+            const username=userInput.value.trim();
+            const password=passInput.value
+
+            if(!username||!password){
+                showError('请输入用户名和密码');
+                return;
+            }
+
+            errorBox.style.display='none';
+            submitBtn.disabled=true;
+            submitBtn.textContent='登录中...';
+
+            fetch('/api/login',{
+                method:'POST',
+                cache:'no-store',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({username:username,password:password})
+            }).then(async resp=>{
+                if(resp.status===401){
+                    showError('用户名或密码错误');
+                    return;
+                }
+
+                if(!resp.ok){
+                    showError('登录服务异常（HTTP '+resp.status+'）');
+                    return;
+                }
+
+                let data=null;
+                try{
+                    data=await resp.json();
+                }catch(e){}
+
+                if(data&&data.code===0){
+                    location.replace(safeNext());
+                    return;
+                }
+
+                showError((data&&data.message)||'登录失败，请重试');
+            }).catch(()=>{
+                showError('网络异常，无法连接服务器');
+            }).finally(()=>{
+                submitBtn.disabled=false;
+                submitBtn.textContent='登 录';
+            });
+        });
+    })();
+</script>
+</body>
+</html>

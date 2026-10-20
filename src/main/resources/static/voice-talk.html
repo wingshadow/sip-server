@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>双向语音对讲 · GB/T 28181 SIP 视频平台</title>
+    <link rel="stylesheet" href="/css/style.css">
+
+    <style>
+        .talk-panel {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .talk-status {
+            padding: 16px;
+            border-radius: 8px;
+            background: #f6f8fa;
+            margin-bottom: 16px;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #999;
+            margin-right: 6px;
+        }
+
+        .status-dot.online {
+            background: #22c55e;
+        }
+
+        .status-dot.busy {
+            background: #f59e0b;
+        }
+
+        .status-dot.error {
+            background: #ef4444;
+        }
+
+        .device-info {
+            line-height: 1.9;
+        }
+
+        .control-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 16px;
+        }
+
+        .btn.danger {
+            background: #dc2626;
+            color: #fff;
+        }
+
+        .btn.talking {
+            background: #16a34a;
+            color: #fff;
+        }
+
+        .meter {
+            margin-top: 16px;
+        }
+
+        .meter-bar {
+            height: 8px;
+            background: #e5e7eb;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .meter-value {
+            width: 0;
+            height: 100%;
+            background: #22c55e;
+            transition: width .08s linear;
+        }
+
+        #log {
+            height: 220px;
+            overflow-y: auto;
+            background: #111827;
+            color: #d1d5db;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: Consolas, monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+
+        @media (max-width: 800px) {
+            .talk-panel {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+<div class="container">
+
+    <div id="nav"></div>
+
+    <div class="card">
+        <h1>双向语音对讲</h1>
+
+        <div class="talk-status">
+            <span id="statusDot" class="status-dot"></span>
+            <strong id="statusText">未连接</strong>
+        </div>
+
+        <div class="device-info">
+            <div>模式：<span id="modeText">-</span></div>
+            <div>设备 ID：<span id="deviceId">-</span></div>
+            <div>通道 ID：<span id="channelId">-</span></div>
+            <div>设备 RTP：<span id="deviceRtp">-</span></div>
+            <div>平台 RTP：<span id="platformRtp">-</span></div>
+            <div>Call-ID：<span id="callId">-</span></div>
+        </div>
+
+        <div class="control-row">
+            <button id="startBtn" class="btn primary" onclick="startTalk()">
+                开启麦克风
+            </button>
+
+            <button id="stopBtn" class="btn danger" onclick="stopTalk()" disabled>
+                停止对讲
+            </button>
+        </div>
+    </div>
+
+    <div class="talk-panel">
+
+        <div class="card">
+            <div class="title">
+                <span class="dot"></span>
+                麦克风 → 摄像机
+            </div>
+
+            <div class="meter">
+                <div class="muted">麦克风音量</div>
+                <div class="meter-bar">
+                    <div id="micMeter" class="meter-value"></div>
+                </div>
+            </div>
+
+            <div style="margin-top:14px">
+                <span class="muted">采样率：</span>
+                <span id="micRate">-</span>
+            </div>
+
+            <div style="margin-top:8px">
+                <span class="muted">发送：</span>
+                <span id="sentPackets">0</span> packets
+                <span class="muted">｜块率：</span>
+                <span id="micBlocks">-</span>
+                <span id="throttleWarn" style="color:#e74c3c;display:none">
+                    ⚠ 页面在后台，浏览器已节流音频采集（块率≈1/s），
+                    设备几乎收不到语音——请保持本页面前台
+                </span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="title">
+                <span class="dot"></span>
+                摄像机 → 浏览器
+            </div>
+
+            <div class="meter">
+                <div class="muted">摄像机音频</div>
+                <div class="meter-bar">
+                    <div id="speakerMeter" class="meter-value"></div>
+                </div>
+            </div>
+
+            <div style="margin-top:14px">
+                <span class="muted">接收：</span>
+                <span id="receivedPackets">0</span> packets
+            </div>
+
+            <div style="margin-top:8px">
+                <span class="muted">PCM：</span>
+                <span id="receivedBytes">0</span> bytes
+            </div>
+        </div>
+
+    </div>
+
+    <div class="card">
+        <div class="title">
+            <span class="dot"></span>
+            会话信息
+        </div>
+
+        <div id="sessionInfo" class="muted">
+            等待会话信息...
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title">
+            <span class="dot"></span>
+            日志
+        </div>
+
+        <div id="log"></div>
+    </div>
+
+    <div class="footer">
+        sip-server · GB/T 28181-2022 · 语音对讲（多端口 RTP）
+    </div>
+
+</div>
+
+<script src="/js/auth.js"></script>
+<script src="/js/common.js"></script>
+
+<script>
+    /*
+     * 会话上下文由 voice.html 建立（POST /api/voice/start 返回 wsUrl），
+     * 经 sessionStorage 传递；缺失时回退到语音控制台。
+     */
+    const sessionCtx = {
+        wsUrl: sessionStorage.getItem('voiceWsUrl') || '',
+        deviceId: sessionStorage.getItem('voiceDeviceId') || '',
+        channelId: sessionStorage.getItem('voiceChannelId') || '',
+        broadcast: sessionStorage.getItem('voiceBroadcast') === '1',
+        callId: sessionStorage.getItem('voiceCallId') || '',
+        localPort: sessionStorage.getItem('voiceLocalPort') || ''
+    };
+
+    if(!sessionCtx.deviceId){
+        location.href = '/voice.html';
+        throw new Error('缺少会话上下文');
+    }
+
+    let ws = null;
+    let audioContext = null;
+    let mediaStream = null;
+    let processor = null;
+    let source = null;
+
+    let micOn = false;
+    let sentPackets = 0;
+    let receivedPackets = 0;
+    let receivedBytes = 0;
+    let lastRateAt = Date.now();
+    let lastRateCount = 0;
+
+    let currentSession = null;
+
+    const $ = id => document.getElementById(id);
+
+    function log(message) {
+        const el = $('log');
+        const time = new Date().toLocaleTimeString();
+
+        el.textContent += '[' + time + '] ' + message + '\n';
+        el.scrollTop = el.scrollHeight;
+
+        console.log(message);
+    }
+
+    function setStatus(text, type) {
+        $('statusText').textContent = text;
+
+        const dot = $('statusDot');
+        dot.className = 'status-dot';
+
+        if (type) {
+            dot.classList.add(type);
+        }
+    }
+
+    function buildWsUrl() {
+        if (sessionCtx.wsUrl) {
+            return sessionCtx.wsUrl;
+        }
+
+        return '/ws/voice?deviceId=' + encodeURIComponent(sessionCtx.deviceId) +
+            '&channelId=' + encodeURIComponent(sessionCtx.channelId || sessionCtx.deviceId);
+    }
+
+    function initDevice() {
+        $('modeText').textContent = sessionCtx.broadcast ? '语音广播' : '双向对讲';
+        $('deviceId').textContent = sessionCtx.deviceId;
+        $('channelId').textContent = sessionCtx.channelId || '（广播）';
+        $('callId').textContent = sessionCtx.callId || '-';
+        $('platformRtp').textContent = sessionCtx.localPort
+            ? 'UDP ' + sessionCtx.localPort
+            : '-';
+    }
+
+    /* 开启麦克风：需要用户手势，WS 已在页面加载时自动连接 */
+    async function startTalk() {
+        if (micOn) {
+            return;
+        }
+
+        $('startBtn').disabled = true;
+
+        try {
+            await startMicrophone();
+
+            micOn = true;
+
+            $('stopBtn').disabled = false;
+
+            setStatus('对讲中', 'online');
+
+            log('麦克风已开启，上行音频经 G.711A 发送至设备');
+
+        } catch (e) {
+            console.error(e);
+
+            $('startBtn').disabled = false;
+
+            setStatus('麦克风启动失败', 'error');
+
+            log('麦克风启动失败: ' + e.message);
+        }
+    }
+
+    /* 停止对讲：关闭麦克风与 WS，并请求后端结束 SIP 会话 */
+    async function stopTalk() {
+        log('停止对讲');
+
+        micOn = false;
+
+        stopMicrophone();
+        closeWebSocket();
+
+        try {
+            await postJson('/api/voice/stop', {
+                deviceId: sessionCtx.deviceId,
+                channelId: sessionCtx.channelId || sessionCtx.deviceId
+            });
+        } catch (e) {
+            log('停止请求失败: ' + e.message);
+        }
+
+        sessionStorage.removeItem('voiceWsUrl');
+        sessionStorage.removeItem('voiceDeviceId');
+        sessionStorage.removeItem('voiceChannelId');
+        sessionStorage.removeItem('voiceBroadcast');
+        sessionStorage.removeItem('voiceCallId');
+        sessionStorage.removeItem('voiceLocalPort');
+
+        $('startBtn').disabled = false;
+        $('stopBtn').disabled = true;
+
+        setStatus('已停止');
+
+        $('callId').textContent = '-';
+        $('deviceRtp').textContent = '-';
+        $('platformRtp').textContent = '-';
+
+        log('对讲已停止');
+
+        setTimeout(()=>{
+            location.href = '/voice.html';
+        }, 800);
+    }
+
+    function connectWebSocket() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            return;
+        }
+
+        const url = buildWsUrl();
+
+        log('连接 WebSocket: ' + url);
+
+        ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+
+        ws.onopen = function () {
+            log('WebSocket 已连接');
+
+            setStatus('已连接，等待设备媒体', 'busy');
+        };
+
+        ws.onmessage = function (event) {
+            if (event.data instanceof ArrayBuffer) {
+                playIncomingAudio(event.data);
+                return;
+            }
+
+            if (event.data instanceof Blob) {
+                event.data.arrayBuffer().then(playIncomingAudio);
+                return;
+            }
+
+            try {
+                const data = JSON.parse(event.data);
+                log('WS: ' + JSON.stringify(data));
+            } catch (e) {
+                log('WS: ' + event.data);
+            }
+        };
+
+        ws.onerror = function () {
+            log('WebSocket 错误');
+            setStatus('WebSocket 异常', 'error');
+        };
+
+        ws.onclose = function () {
+            log('WebSocket 已关闭');
+
+            if (micOn) {
+                setStatus('WebSocket 已断开', 'error');
+            }
+        };
+    }
+
+    function closeWebSocket() {
+        if (ws) {
+            try {
+                ws.close();
+            } catch (e) {
+            }
+
+            ws = null;
+        }
+    }
+
+    async function startMicrophone() {
+        if (!navigator.mediaDevices ||
+            !navigator.mediaDevices.getUserMedia) {
+            throw new Error('浏览器不支持麦克风访问');
+        }
+
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                channelCount: 1,
+                echoCancellation: true,
+                noiseSuppression: true,
+                // AGC 会把正常说话声推到 Int16 削顶（日志 peak=32767），
+                // G.711 压扩后表现为持续爆音/失真，关闭让电平保持原始比例。
+                autoGainControl: false
+            }
+        });
+
+        audioContext = new AudioContext();
+
+        source = audioContext.createMediaStreamSource(mediaStream);
+
+        processor = audioContext.createScriptProcessor(
+            1024,
+            1,
+            1
+        );
+
+        source.connect(processor);
+        // 不直连 destination：直连会把麦克风送回扬声器造成回声/啸叫，
+        // 且 ScriptProcessor 在部分浏览器需挂到 destination 才会被拉取。
+        // 用 gain=0 的哑节点中转，兼顾两者。
+        const mute = audioContext.createGain();
+        mute.gain.value = 0;
+        processor.connect(mute);
+        mute.connect(audioContext.destination);
+
+        $('micRate').textContent =
+            audioContext.sampleRate + ' Hz → 8000 Hz';
+
+        processor.onaudioprocess = function (event) {
+            if (!micOn) {
+                return;
+            }
+
+            const input = event.inputBuffer.getChannelData(0);
+
+            const pcm8k = resampleTo8k(
+                input,
+                audioContext.sampleRate
+            );
+
+            const pcm16 = floatToPcm16(pcm8k);
+
+            sendPcm(pcm16);
+
+            updateMeter(input);
+        };
+
+        log(
+            '麦克风已启动: ' +
+            audioContext.sampleRate +
+            'Hz → 8000Hz'
+        );
+    }
+
+    function stopMicrophone() {
+        if (processor) {
+            processor.disconnect();
+            processor.onaudioprocess = null;
+            processor = null;
+        }
+
+        if (source) {
+            source.disconnect();
+            source = null;
+        }
+
+        if (mediaStream) {
+            mediaStream.getTracks().forEach(track => {
+                track.stop();
+            });
+
+            mediaStream = null;
+        }
+
+        if (audioContext) {
+            audioContext.close().catch(() => {
+            });
+
+            audioContext = null;
+        }
+
+        $('micRate').textContent = '-';
+    }
+
+    function sendPcm(pcm) {
+        if (!ws ||
+            ws.readyState !== WebSocket.OPEN ||
+            !micOn) {
+            return;
+        }
+
+        /*
+         * VoiceService.pushAudio() 接收 8kHz/16bit/LE PCM，
+         * 服务端 G.711A 编码后按 20ms 节奏发送设备。
+         */
+        ws.send(pcm.buffer);
+
+        sentPackets++;
+
+        $('sentPackets').textContent = sentPackets;
+
+        // 实时上行块率（每秒刷新）：48kHz/1024 样本 ≈ 45 块/s。
+        // Chrome 对后台标签页的 ScriptProcessorNode 有 1Hz 节流，
+        // 块率跌到 ~1 时设备每秒只收到 1 块（85ms）真实语音，其余全是
+        // 服务端补的 A-law 静音帧——表现为"摄像机没有声音"。
+        const now = Date.now();
+        if (now - lastRateAt >= 1000) {
+            const rate =
+                Math.round(
+                    (sentPackets - lastRateCount) *
+                    1000 /
+                    (now - lastRateAt)
+                );
+            lastRateAt = now;
+            lastRateCount = sentPackets;
+            $('micBlocks').textContent = rate + ' 块/s';
+            $('throttleWarn').style.display =
+                (document.hidden || rate < 10) ? 'inline' : 'none';
+        }
+    }
+
+    function playIncomingAudio(arrayBuffer) {
+        if (!audioContext) {
+            return;
+        }
+
+        const pcm = new Int16Array(arrayBuffer);
+
+        if (!pcm.length) {
+            return;
+        }
+
+        receivedPackets++;
+        receivedBytes += arrayBuffer.byteLength;
+
+        $('receivedPackets').textContent = receivedPackets;
+        $('receivedBytes').textContent = receivedBytes;
+
+        const buffer =
+            audioContext.createBuffer(
+                1,
+                pcm.length,
+                8000
+            );
+
+        const channel = buffer.getChannelData(0);
+
+        let max = 0;
+
+        for (let i = 0; i < pcm.length; i++) {
+            const value = pcm[i] / 32768;
+
+            channel[i] = value;
+
+            max = Math.max(
+                max,
+                Math.abs(value)
+            );
+        }
+
+        const source =
+            audioContext.createBufferSource();
+
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+        source.start();
+
+        $('speakerMeter').style.width =
+            Math.min(100, max * 100 * 2) + '%';
+
+        setTimeout(() => {
+            $('speakerMeter').style.width = '0%';
+        }, 100);
+    }
+
+    function resampleTo8k(input, inputRate) {
+        if (inputRate === 8000) {
+            return input.slice();
+        }
+
+        const ratio = inputRate / 8000;
+        const outputLength =
+            Math.floor(input.length / ratio);
+
+        const output =
+            new Float32Array(outputLength);
+
+        for (let i = 0; i < outputLength; i++) {
+            const pos = i * ratio;
+            const index = Math.floor(pos);
+            const fraction = pos - index;
+
+            const a = input[index] || 0;
+            const b =
+                input[index + 1] !== undefined
+                    ? input[index + 1]
+                    : a;
+
+            output[i] =
+                a + (b - a) * fraction;
+        }
+
+        return output;
+    }
+
+    function floatToPcm16(input) {
+        const output =
+            new Int16Array(input.length);
+
+        for (let i = 0; i < input.length; i++) {
+            let value = input[i];
+
+            if (value > 1) {
+                value = 1;
+            } else if (value < -1) {
+                value = -1;
+            }
+
+            output[i] =
+                value < 0
+                    ? value * 32768
+                    : value * 32767;
+        }
+
+        return output;
+    }
+
+    function updateMeter(input) {
+        let max = 0;
+
+        for (let i = 0; i < input.length; i++) {
+            max = Math.max(
+                max,
+                Math.abs(input[i])
+            );
+        }
+
+        const width =
+            Math.min(100, max * 100);
+
+        $('micMeter').style.width =
+            width + '%';
+    }
+
+    function renderSession(s) {
+        if (!s) {
+            return;
+        }
+
+        $('callId').textContent =
+            s.callId || s.broadcastCallId || '-';
+
+        $('deviceRtp').textContent =
+            s.audioIp && s.audioPort
+                ? s.audioIp + ':' + s.audioPort
+                : '等待设备媒体';
+
+        $('platformRtp').textContent =
+            s.localPort
+                ? 'UDP ' + s.localPort
+                : '-';
+
+        $('sessionInfo').innerHTML =
+            '<div>状态：' +
+            stateTag(s.state, s.stopReason) +
+            '</div>' +
+            '<div>类型：' +
+            esc(s.broadcast ? '广播' : '对讲') +
+            '</div>' +
+            '<div>SSRC：' +
+            esc(String(s.ssrc || '-')) +
+            '</div>' +
+            '<div>Payload Type：' +
+            esc(String(s.payloadType || 8)) +
+            '</div>' +
+            '<div>已发 RTP：' +
+            esc(String(s.packetsSent || 0)) +
+            '</div>' +
+            '<div>已建连：' +
+            esc(formatEpoch(s.talkStartTime || s.createTime)) +
+            '</div>';
+    }
+
+    async function refreshSession() {
+        try {
+            const r = await fetchJson('/api/voice/sessions');
+
+            const list = (r && r.list) || [];
+
+            const session = list.find(s =>
+                s.deviceId === sessionCtx.deviceId &&
+                (s.channelId === (sessionCtx.channelId || sessionCtx.deviceId))
+            );
+
+            if (session) {
+                currentSession = session;
+                renderSession(session);
+
+                if (session.state === 'TALKING') {
+                    setStatus('对讲中', 'online');
+                } else if (
+                    session.state === 'INVITED' ||
+                    session.state === 'BROADCASTING' ||
+                    session.state === 'AWAIT_INVITE'
+                ) {
+                    setStatus('等待设备确认...', 'busy');
+                } else if (session.state === 'STOPPED') {
+                    setStatus('会话已停止: ' + (session.stopReason || ''), 'error');
+                }
+            }
+        } catch (e) {
+            console.warn(
+                '[SESSION]',
+                e
+            );
+        }
+    }
+
+    initDevice();
+
+    renderNav('voice');
+
+    connectWebSocket();
+
+    setInterval(refreshSession, 1000);
+
+    window.addEventListener(
+        'beforeunload',
+        function () {
+            stopMicrophone();
+            closeWebSocket();
+        }
+    );
+</script>
+
+</body>
+</html>

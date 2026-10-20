@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>历史回放 · GB/T 28181 SIP 视频平台</title>
+    <!-- v=20261015：dl 遮罩样式为近期新增，旧缓存 style.css 缺 .dl-card 白底/
+         .dl-pct 配色，会导致遮罩文字直接叠在黑色蒙层上"深得看不见" -->
+    <link rel="stylesheet" href="/css/style.css?v=20261015">
+</head>
+<body>
+<div class="container">
+
+    <div id="nav"></div>
+
+    <div class="card">
+        <div class="title"><span class="dot"></span>录像查询（MANSCDP RecordInfo）</div>
+
+        <div class="toolbar">
+            <select id="pbDevice">
+                <option value="">请选择设备</option>
+            </select>
+
+            <input id="pbChannel" type="text" placeholder="通道 ID（留空=设备 ID）"
+                   style="height:36px;padding:0 10px;border:1px solid #dcdfe6;border-radius:6px;min-width:220px">
+        </div>
+
+        <div class="toolbar" style="margin-top:10px">
+            <input id="startTime" type="datetime-local"
+                   style="height:36px;padding:0 10px;border:1px solid #dcdfe6;border-radius:6px">
+            <span class="muted">至</span>
+            <input id="endTime" type="datetime-local"
+                   style="height:36px;padding:0 10px;border:1px solid #dcdfe6;border-radius:6px">
+
+            <button class="btn primary" onclick="queryRecords(false)">查询录像</button>
+            <button class="btn gray" onclick="queryRecords(true)">查询全部</button>
+
+            <span id="pbInfo" class="muted"></span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title"><span class="dot" style="background:#16a34a"></span>回放播放器</div>
+
+        <div class="preview">
+            <video id="video" controls playsinline muted></video>
+        </div>
+
+        <div class="preview-bar">
+            <span id="playUrl" class="url">尚未开始回放</span>
+            <button class="btn danger" onclick="stopPlayback()">停止回放</button>
+            <button class="btn gray" onclick="destroyPlayer()">关闭播放器</button>
+        </div>
+
+        <div class="ctl-bar" id="pbCtlBar">
+            <button class="btn warning" onclick="pbControl('pause')">暂停</button>
+            <button class="btn success" onclick="pbControl('resume')">继续</button>
+
+            <span class="muted">倍速</span>
+            <select id="pbScale">
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="2">2x</option>
+                <option value="4">4x</option>
+                <option value="8">8x</option>
+            </select>
+            <button class="btn primary" onclick="pbScaleChange()">应用倍速</button>
+
+            <input id="pbSeekTime" type="datetime-local" title="跳转目标时间（须在回放区间内）">
+            <button class="btn voice" onclick="pbSeek()">跳转</button>
+
+            <span id="pbCtlInfo" class="muted">MANSRTSP 媒体控制（仅 local 模式回放会话生效）</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title"><span class="dot" style="background:#d97706"></span>录像文件</div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>名称</th>
+                    <th>文件路径</th>
+                    <th>开始时间</th>
+                    <th>结束时间</th>
+                    <th>类型</th>
+                    <th>录像者</th>
+                    <th>大小</th>
+                    <th>操作</th>
+                </tr>
+                </thead>
+
+                <tbody id="recordBody">
+                <tr>
+                    <td colspan="8" class="muted">暂无录像记录</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="dlMask" class="modal-mask">
+        <div class="dl-card">
+            <div class="dl-spinner"></div>
+            <div class="dl-title">正在下载录像</div>
+            <div id="dlMaskStatus" class="dl-status">准备中…</div>
+            <div class="dl-bar"><div id="dlMaskBar"></div></div>
+            <div id="dlMaskPct" class="dl-pct">0%</div>
+            <div class="dl-hint">录像按 4 倍速下载（设备不支持时按 1x 实时推流），推流并完成转码后自动开始传输；期间请保持页面打开</div>
+            <button class="btn gray" style="margin-top:14px" onclick="cancelDownload()">取消下载</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title"><span class="dot" style="background:#2878f0"></span>回放会话</div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>设备 ID</th>
+                    <th>通道 ID</th>
+                    <th>类型</th>
+                    <th>SSRC</th>
+                    <th>状态</th>
+                    <th>RTP 端口</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                </tr>
+                </thead>
+
+                <tbody id="sessionBody">
+                <tr>
+                    <td colspan="8" class="muted">暂无回放会话</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="footer">
+        sip-server · GB/T 28181-2022 接入测试 · 每 5 秒自动刷新
+    </div>
+
+</div>
+
+<script src="/js/mpegts.min.js"></script>
+<script src="/js/ZLMRTCClient.js"></script>
+<script src="/js/auth.js"></script>
+<script src="/js/common.js"></script>
+
+<script>
+    let player = null;
+    let playerKind = null;   // 'mpegts' | 'rtc'
+
+    const params = urlParams();
+    const urlDeviceId = params.get('deviceId') || '';
+
+    /* 当前录像列表缓存（回放/下载按钮复用） */
+    let recordCache = [];
+
+    function $(id){
+        return document.getElementById(id);
+    }
+
+    /* datetime-local 值 → epoch 秒；空值返回 null */
+    function toEpochSeconds(value){
+        if(!value){
+            return null;
+        }
+
+        const ms = new Date(value).getTime();
+
+        return isNaN(ms) ? null : Math.floor(ms / 1000);
+    }
+
+    function channelId(){
+        return $('pbChannel').value.trim() || $('pbDevice').value;
+    }
+
+    /* zlm 模式下回放地址为 http，转 ws-flv 播放（免 CORS） */
+    function toPlayableUrl(url){
+        if(!url){
+            return '';
+        }
+
+        return isZlmMode()
+            ? url.replace(/^http:\/\//, 'ws://')
+            : url;
+    }
+
+    async function queryRecords(all){
+        const deviceId = $('pbDevice').value;
+
+        if(!deviceId){
+            alert('请先选择设备');
+            return;
+        }
+
+        const body = {
+            deviceId,
+            channelId: channelId()
+        };
+
+        if(!all){
+            const startTime = toEpochSeconds($('startTime').value);
+            const endTime = toEpochSeconds($('endTime').value);
+
+            if(startTime === null || endTime === null){
+                alert('请选择完整的时间范围');
+                return;
+            }
+
+            if(startTime >= endTime){
+                alert('开始时间必须早于结束时间');
+                return;
+            }
+
+            body.startTime = startTime;
+            body.endTime = endTime;
+        }
+
+        try{
+            const r = await postJson('/api/records/query', body);
+
+            // code 不存在视为成功（后端成功响应不返回 code，与 1.0 契约一致）
+            if(r.code!==undefined&&Number(r.code)!==0){
+                alert('查询失败: ' + (r.message || '未知错误'));
+                return;
+            }
+
+            recordCache = r.records || [];
+
+            renderRecords(recordCache);
+
+            $('pbInfo').textContent =
+                '共 ' + (r.recordCount || 0) + ' 条录像' +
+                (r.partial ? '（设备分包未收全，结果可能不完整）' : '');
+
+        }catch(e){
+            alert('查询异常: ' + e.message);
+        }
+    }
+
+    function renderRecords(records){
+        const body = $('recordBody');
+
+        if(!records.length){
+            body.innerHTML =
+                '<tr><td colspan="8" class="muted">暂无录像记录</td></tr>';
+            return;
+        }
+
+        body.innerHTML = records.map((r, idx)=>
+            '<tr>'+
+            '<td>'+esc(r.name||'-')+'</td>'+
+            '<td class="url">'+esc(r.filePath||'-')+'</td>'+
+            '<td>'+formatDate(r.startTime)+'</td>'+
+            '<td>'+formatDate(r.endTime)+'</td>'+
+            '<td>'+esc(r.type||'-')+'</td>'+
+            '<td>'+esc(r.recorderId||'-')+'</td>'+
+            '<td>'+esc(r.fileSize||'-')+'</td>'+
+            '<td>'+
+                '<button class="btn primary" onclick="playRecord('+idx+')">回放</button> '+
+                '<button class="btn warning" onclick="downloadRecord(this,'+idx+')">下载</button>'+
+            '</td>'+
+            '</tr>'
+        ).join('');
+    }
+
+    function recordEpochRange(r){
+        const start = Math.floor(new Date(r.startTime).getTime() / 1000);
+        const end = Math.floor(new Date(r.endTime).getTime() / 1000);
+
+        return {start, end};
+    }
+
+    async function playRecord(idx){
+        const r = recordCache[idx];
+
+        if(!r){
+            return;
+        }
+
+        const deviceId = $('pbDevice').value;
+        const {start, end} = recordEpochRange(r);
+
+        try{
+            const resp = await postJson('/api/playback/start', {
+                deviceId,
+                channelId: channelId(),
+                startTime: start,
+                endTime: end
+            });
+
+            // code 不存在视为成功（后端成功响应不返回 code，与 1.0 契约一致）
+            if(resp.code!==undefined&&Number(resp.code)!==0){
+                alert('开始回放失败: ' + (resp.message || '未知错误'));
+                return;
+            }
+
+            /* 拖动框默认填本次回放起点（后端 seek 须落在区间内） */
+            $('pbSeekTime').value = toLocalInputValue(start);
+            pbRange = {start, end};
+
+            if(isZlmMode()){
+                /* zlm 模式走 WebRTC：回放流同样是设备 PS 内嵌 G.711a(PCMA)，
+                   mpegts.js/MSE 不支持该音频编码（CodecUnsupported），
+                   浏览器原生 WebRTC 支持 PCMA，音视频均可解码 */
+                $('playUrl').textContent = 'WebRTC 连接中...';
+
+                const w = await fetchJson('/api/playback/webrtc-url?deviceId='
+                    + encodeURIComponent(deviceId)
+                    + '&channelId=' + encodeURIComponent(channelId()));
+
+                if(w.error){
+                    $('playUrl').textContent = '回放出错: ' + w.error;
+                    return;
+                }
+
+                playWebrtc(w.webrtcUrl);
+            }else{
+                playFlv(resp.flvUrl || resp.playbackFlvUrl || resp.liveFlvUrl);
+            }
+
+            refreshSessions();
+
+        }catch(e){
+            alert('开始回放异常: ' + e.message);
+        }
+    }
+
+    async function stopPlayback(){
+        const deviceId = $('pbDevice').value;
+
+        if(!deviceId){
+            return;
+        }
+
+        try{
+            await postJson('/api/playback/stop', {
+                deviceId,
+                channelId: channelId()
+            });
+
+            destroyPlayer();
+            refreshSessions();
+
+        }catch(e){
+            alert('停止回放异常: ' + e.message);
+        }
+    }
+
+    async function stopSession(deviceId, ch){
+        try{
+            await postJson('/api/playback/stop', {deviceId, channelId: ch});
+
+            refreshSessions();
+
+        }catch(e){
+            alert('停止会话异常: ' + e.message);
+        }
+    }
+
+    /* ===== 回放媒体控制（MANSRTSP over SIP INFO）=====
+     * 仅 local 模式回放会话可用；zlm 模式 Dialog 由 ZLMediaKit 托管，
+     * 后端会明确拒绝，UI 上直接禁用按钮并说明原因。 */
+    let pbRange = null;       /* 当前回放会话区间 {start,end}（epoch 秒） */
+    let pbScaleCurrent = 1;   /* 当前倍速（会话刷新时以服务端为准） */
+
+    /* extra: 追加到请求体的字段（scale 带 speed、seek 带 startTime） */
+    async function pbControl(action, extra){
+        const deviceId = $('pbDevice').value;
+
+        if(!deviceId){
+            alert('请先选择设备');
+            return;
+        }
+
+        const body = Object.assign({
+            deviceId,
+            channelId: channelId(),
+            action
+        }, extra || {});
+
+        try{
+            const r = await postJson('/api/playback/control', body);
+
+            if(r && r.code!==undefined && Number(r.code)!==0){
+                $('pbCtlInfo').textContent = action+' 失败: '+(r.message||'未知错误');
+                return false;
+            }
+
+            $('pbCtlInfo').textContent = action+' 已下发'+
+                (r && r.mansrtsp ? '（'+r.mansrtsp+'）' : '');
+
+            return true;
+
+        }catch(e){
+            $('pbCtlInfo').textContent = action+' 异常: '+e.message;
+            return false;
+        }
+    }
+
+    async function pbScaleChange(){
+        const speed = parseFloat($('pbScale').value);
+
+        if(!Number.isFinite(speed) || speed<0.25 || speed>16){
+            alert('倍速须在 0.25~16');
+            return;
+        }
+
+        pbScaleCurrent = speed;
+
+        await pbControl('scale', {speed});
+    }
+
+    async function pbSeek(){
+        const deviceId = $('pbDevice').value;
+
+        if(!deviceId){
+            alert('请先选择设备');
+            return;
+        }
+
+        const t = toEpochSeconds($('pbSeekTime').value);
+
+        if(t === null){
+            alert('请选择跳转目标时间');
+            return;
+        }
+
+        if(pbRange && (t < pbRange.start || t > pbRange.end)){
+            alert('跳转时间须在回放区间内：'+formatEpoch(pbRange.start)+' ~ '+formatEpoch(pbRange.end));
+            return;
+        }
+
+        const ok = await pbControl('seek', {startTime: t});
+
+        if(ok){
+            $('pbCtlInfo').textContent = '已跳转到 '+formatEpoch(t)+'（设备从该点继续推流）';
+        }
+    }
+
+    /* epoch 秒 → datetime-local 输入值（本地时区，秒恒取 00） */
+    function toLocalInputValue(epochSec){
+        const d = new Date(Number(epochSec)*1000);
+        const pad = n=>String(n).padStart(2,'0');
+
+        return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+
+            'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+    }
+
+    /*
+     * 从会话列表跟踪当前设备/通道的回放区间与倍速：
+     * - 拖动控件据此做范围提示（后端也会校验，双保险）
+     * - 倍速下拉以服务端 playbackScale 为准回显
+     * - zlm 模式禁用全部控制按钮（后端不支持）
+     */
+    function trackPlaybackRange(sessions){
+        const cur = (sessions||[]).find(s=>
+            String(s.type||'').toUpperCase()==='PLAYBACK' &&
+            s.deviceId===$('pbDevice').value &&
+            s.channelId===channelId());
+
+        if(cur && cur.playbackStart && cur.playbackEnd){
+            pbRange = {start: Number(cur.playbackStart), end: Number(cur.playbackEnd)};
+        }else{
+            pbRange = null;
+        }
+
+        if(cur && cur.playbackScale){
+            pbScaleCurrent = Number(cur.playbackScale);
+
+            const sel = $('pbScale');
+            if([].some.call(sel.options, o=>parseFloat(o.value)===pbScaleCurrent)){
+                sel.value = String(pbScaleCurrent);
+            }
+        }
+
+        const disabled = isZlmMode();
+        document.querySelectorAll('#pbCtlBar .btn').forEach(b=>{
+            b.disabled = disabled;
+        });
+
+        if(disabled){
+            $('pbCtlInfo').textContent = 'zlm 模式暂不支持回放控制（Dialog 由 ZLMediaKit 托管），请切换 local 媒体模式';
+        }else if(pbRange){
+            $('pbCtlInfo').textContent = '回放区间 '+formatEpoch(pbRange.start)+' ~ '+formatEpoch(pbRange.end)+
+                ' · 当前 '+pbScaleCurrent+'x';
+        }else{
+            $('pbCtlInfo').textContent = '当前设备/通道无回放会话，先发起回放';
+        }
+    }
+
+    /* 进行中的下载任务（用于取消；null 表示空闲） */
+    let dlAbort = null;
+    let dlBtn = null;
+    let dlPollTimer = null;
+    /* 已展示过的最大进度：进度只许前进不许回退 */
+    let dlMaxPct = 0;
+
+    /*
+     * 下载：POST /api/download/start 启动下载会话，再拉取最终 MP4。
+     *
+     * 服务端必须等 ffmpeg 退出、最终文件落定后才开始传输——mp4 封装器
+     * 关闭文件时会回写修补文件头（mdat 尺寸；faststart 还会重排 moov），
+     * 边下边传会把"修补前的旧字节"流给客户端，文件报 moov atom not found。
+     * 因此全程用全屏遮罩分两阶段反馈：
+     *   阶段1 设备按倍速推流 + ffmpeg 转码（按 录像时长/倍速 估算进度，
+     *        轮询下载目录展示 .part 增量）
+     *   阶段2 文件落定后整文件传输（Content-Length 已知，真实百分比进度）
+     */
+    async function downloadRecord(btn, idx){
+        const r = recordCache[idx];
+
+        if(!r){
+            return;
+        }
+
+        if(dlAbort){
+            alert('已有下载任务进行中，请先等待或取消');
+            return;
+        }
+
+        const deviceId = $('pbDevice').value;
+        const {start, end} = recordEpochRange(r);
+        const controller = new AbortController();
+
+        dlAbort = controller;
+        dlBtn = btn || null;
+
+        if(dlBtn){
+            dlBtn.disabled = true;
+        }
+
+        showDlMask('正在启动下载会话…');
+
+        try{
+            const resp = await postJson('/api/download/start', {
+                deviceId,
+                channelId: channelId(),
+                startTime: start,
+                endTime: end
+            });
+
+            // 取消发生在启动期间：UI 已由 cancelDownload 处理
+            if(controller.signal.aborted){
+                setDlStatus('下载已取消');
+                finishDlMask(1200);
+                return;
+            }
+
+            // code 不存在视为成功（后端成功响应不返回 code，与 1.0 契约一致）
+            if((resp.code!==undefined&&Number(resp.code)!==0) || !resp.downloadUrl){
+                alert('下载失败: ' + (resp.message || '文件尚未生成'));
+                finishDlMask(0);
+                return;
+            }
+
+            const speed = Number(resp.downloadSpeed) > 0 ? Number(resp.downloadSpeed) : 1;
+            const totalSec = end - start;
+            const expectedSec = totalSec / speed;
+
+            startPartialPolling(expectedSec, speed, totalSec, deviceId, channelId());
+            await streamDownload(resp.downloadUrl, controller);
+
+        }catch(e){
+            alert('下载异常: ' + e.message);
+            finishDlMask(0);
+        }
+    }
+
+    /* 取消进行中的下载：中止 HTTP 拉取，并停止服务端下载会话 */
+    function cancelDownload(){
+        stopPartialPolling();
+
+        if(dlAbort){
+            dlAbort.abort();
+        }
+
+        /* 停止服务端会话，使 ffmpeg 收尾退出，避免继续转码占用资源 */
+        const deviceId = $('pbDevice').value;
+
+        if(deviceId){
+            postJson('/api/playback/stop', {
+                deviceId,
+                channelId: channelId()
+            }).catch(()=>{});
+        }
+
+        setDlStatus('正在取消…');
+    }
+
+    /* 流式拉取最终文件并保存（服务端只传稳定文件，带 Content-Length） */
+    async function streamDownload(url, controller){
+        try{
+            const resp = await fetch(url, {
+                cache: 'no-store',
+                signal: controller.signal
+            });
+
+            if(!resp.ok){
+                const text = await resp.text().catch(()=> '');
+
+                throw new Error(text || ('HTTP ' + resp.status));
+            }
+
+            // 进入传输阶段：停止 .part 轮询，切换为真实进度
+            stopPartialPolling();
+
+            /* 保存名取 Content-Disposition */
+            const disposition = resp.headers.get('Content-Disposition') || '';
+            const matched = /filename="?([^";]+)"?/.exec(disposition);
+            const saveName = matched
+                ? matched[1]
+                : (url.split('/').pop().split('?')[0] || 'record.mp4');
+
+            const total = Number(resp.headers.get('Content-Length')) || 0;
+
+            setDlStatus('正在传输文件…');
+            /* 阶段2 进度从阶段1 的 95% 起继续映射到 100%，不回退、不重新起跳 */
+
+            if(!resp.body || !resp.body.getReader){
+                /* 旧浏览器无流式响应体：退回新窗口下载 */
+                window.open(url, '_blank');
+                setDlStatus('已唤起浏览器下载');
+                finishDlMask(1500);
+                return;
+            }
+
+            const reader = resp.body.getReader();
+            const chunks = [];
+            let received = 0;
+
+            for(;;){
+                const {done: finished, value} = await reader.read();
+
+                if(finished){
+                    break;
+                }
+
+                if(value && value.length){
+                    chunks.push(value);
+                    received += value.length;
+
+                    const mb = (received / 1048576).toFixed(1);
+
+                    setDlStatus('正在传输… 已接收 ' + mb + ' MB' +
+                        (total
+                            ? ' / ' + (total / 1048576).toFixed(1) + ' MB（' +
+                              Math.round(95 + received / total * 5) + '%）'
+                            : ''));
+
+                    if(total > 0){
+                        /* 传输进度映射到 95%~100%，与阶段1 无缝衔接 */
+                        setDlBar(95 + received / total * 5);
+                    }
+                }
+            }
+
+            setDlBar(100);
+            setDlStatus('下载完成，正在保存…');
+
+            const blob = new Blob(chunks, {type: 'video/mp4'});
+            const href = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+
+            a.href = href;
+            a.download = saveName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            /* 延迟回收，确保浏览器已开始读取 Blob */
+            setTimeout(()=>URL.revokeObjectURL(href), 60000);
+
+            setDlStatus('已保存: ' + saveName +
+                '（' + (received / 1048576).toFixed(1) + ' MB）');
+
+            finishDlMask(2000);
+
+        }catch(e){
+            if(e.name === 'AbortError'){
+                setDlStatus('下载已取消');
+                finishDlMask(1200);
+            }else{
+                setDlStatus('下载失败: ' + e.message);
+                alert('下载失败: ' + e.message);
+                finishDlMask(3000);
+            }
+        }
+    }
+
+    /* ==================== 下载遮罩 ==================== */
+
+    function showDlMask(status){
+        $('dlMask').style.display = 'flex';
+        setDlStatus(status || '准备中…');
+        dlMaxPct = 0;
+        setDlBar(0);
+    }
+
+    function setDlStatus(text){
+        $('dlMaskStatus').textContent = text;
+    }
+
+    /*
+     * 进度条 + 百分比联动（阶段1 为估算值，阶段2 为真实传输百分比）。
+     * 单调不回退：估算/真实双源切换、阶段1→2 衔接、轮询瞬时失败等情况下，
+     * 都不允许百分比比之前展示过的小——杜绝"一会变大一会变小"的跳动观感。
+     */
+    function setDlBar(percent){
+        const p = Math.max(dlMaxPct, Math.max(0, Math.min(100, percent)));
+
+        dlMaxPct = p;
+        $('dlMaskBar').style.width = p + '%';
+        $('dlMaskPct').textContent = Math.round(p) + '%';
+    }
+
+    /* 结束一次下载：清理状态，遮罩按延迟隐藏 */
+    function finishDlMask(delay){
+        stopPartialPolling();
+        dlAbort = null;
+
+        if(dlBtn){
+            dlBtn.disabled = false;
+            dlBtn = null;
+        }
+
+        if(delay){
+            setTimeout(()=>{
+                $('dlMask').style.display = 'none';
+            }, delay);
+        }else{
+            $('dlMask').style.display = 'none';
+        }
+    }
+
+    /*
+     * 阶段1 反馈：轮询服务端状态，按 ffmpeg 真实输出时间展示进度。
+     *
+     * 进度分母为录像时长、分子为 ffmpeg 已输出的媒体时间（time= 字段）
+     * —— 无论设备按 1x 还是 4x 推流都真实反映进度；早期按"录像时长/倍速"
+     * 估算在设备不按倍速推流时会过早到顶，长时间停在 95% 假死。
+     * 取不到输出时间时退化为倍速估算；封顶 95%，剩余留给 ffmpeg 收尾
+     * （flush/moov/faststart）与最终文件落定。
+     */
+    function startPartialPolling(expectedSec, speed, totalSec, deviceId, channelId){
+        stopPartialPolling();
+
+        const t0 = Date.now();
+        const speedText = speed > 1 ? speed + 'x ' : '';
+
+        dlPollTimer = setInterval(async ()=>{
+            const elapsed = (Date.now() - t0) / 1000;
+
+            // 服务端真实进度：ffmpeg 已输出的录像秒数 + .part 已产出字节
+            let outSec = 0;
+            let sizeMb = null;
+
+            try{
+                const st = await fetchJson('/api/download/status'
+                    + '?deviceId=' + encodeURIComponent(deviceId)
+                    + '&channelId=' + encodeURIComponent(channelId));
+
+                if(st && st.active !== false){
+                    outSec = Number(st.outTimeSec) || 0;
+                    if(st.size){
+                        sizeMb = st.size / 1048576;
+                    }
+                }
+            }catch(e){
+                /* 轮询失败退化为估算，不影响主流程 */
+            }
+
+            /*
+             * 双源取小，单一来源都不虚高：
+             *   真实源 = ffmpeg 已输出的录像秒数 / 录像时长（设备不按倍速推流时唯一可信）
+             *   估算源 = 已耗时 / 预期推流时长（ffmpeg 输出前的空窗期填充）
+             * 设备按协商倍速推流时两者恒等；设备降速到 1x 时估算会一路虚高，
+             * 取小后自动以真实源为准。空窗期估算封顶 10%，防止估算先冲高、
+             * 真实进度接上时被单调钳制冻结在高位。配合 setDlBar 的单调钳制，
+             * 百分比全程只升不降。
+             */
+            const realPct = (totalSec > 0 && outSec > 0) ? outSec / totalSec * 100 : null;
+            const estRaw = expectedSec > 0 ? elapsed / expectedSec * 100 : 0;
+            const estPct = realPct === null ? Math.min(10, estRaw) : estRaw;
+            const pct = Math.min(95, realPct === null ? estPct : Math.min(realPct, estPct));
+
+            let text;
+
+            if(outSec > 0 && totalSec > 0 && outSec < totalSec){
+                text = '设备 ' + speedText + '推流/转码中…';
+            }else if(outSec > 0 && totalSec > 0){
+                // 输出时间已到录像末尾：设备推送完毕，ffmpeg 正在收尾落定
+                text = '推流完成，转码收尾中…';
+            }else{
+                // 尚无输出时间（首包/输入解析约 10s，或轮询失败）：按估算提示
+                text = elapsed < expectedSec
+                    ? '设备 ' + speedText + '推流/转码中…'
+                    : '等待设备发送完毕，转码收尾中…';
+            }
+
+            if(sizeMb !== null){
+                text += ' 已生成 ' + sizeMb.toFixed(1) + ' MB';
+            }
+
+            setDlStatus(text);
+            setDlBar(pct);
+        }, 2000);
+    }
+
+    function stopPartialPolling(){
+        if(dlPollTimer){
+            clearInterval(dlPollTimer);
+            dlPollTimer = null;
+        }
+    }
+
+    function playFlv(url){
+        const playable = toPlayableUrl(url);
+
+        destroyPlayer();
+
+        if(!playable){
+            return;
+        }
+
+        /* mseFlvSupported 兼容内置旧版 mpegts.min.js（能力键为 msePlayback），
+           直接读 mseFlvPlayback 会恒为 undefined 导致误报不支持 */
+        if(!mseFlvSupported()){
+            $('playUrl').textContent = '浏览器不支持 MSE FLV 播放: ' + playable;
+            return;
+        }
+
+        try{
+            player = mpegts.createPlayer({
+                type: 'flv',
+                isLive: false,
+                url: playable
+            }, {
+                enableStashBuffer: false,
+                stashInitialSize: 128,
+                lazyLoad: false,
+                autoCleanupSourceBuffer: true
+            });
+
+            player.attachMediaElement($('video'));
+
+            player.on(mpegts.Events.ERROR, (type, detail, info)=>{
+                console.error('[PLAYBACK FLV] ERROR', type, detail, info);
+                $('playUrl').textContent = '播放出错: ' + (detail || type);
+            });
+
+            player.load();
+
+            player.play().catch(()=>{});
+
+            $('playUrl').textContent = playable;
+
+        }catch(e){
+            $('playUrl').textContent = '播放失败: ' + e.message;
+        }
+    }
+
+    /* zlm 模式 WebRTC 回放：ZLMRTCClient 封装 WHEP 信令，
+       浏览器原生解码 H.264 + PCMA（无需 wasm 解码器）。
+       注意：信令地址必须保持 http，不能用 toPlayableUrl 转 ws */
+    function playWebrtc(url){
+        destroyPlayer();
+
+        if(!url){
+            return;
+        }
+
+        try{
+            player = new ZLMRTCClient.Endpoint({
+                element: $('video'),
+                debug: false,
+                zlmsdpUrl: url,
+                simulcast: false,
+                useCamera: false,
+                audioEnable: true,
+                videoEnable: true,
+                recvOnly: true,
+                usedatachannel: false
+            });
+            playerKind = 'rtc';
+        }catch(e){
+            $('playUrl').textContent = '回放失败: ' + e.message;
+            return;
+        }
+
+        player.on(ZLMRTCClient.Events.WEBRTC_ON_REMOTE_STREAMS, ()=>{
+            $('playUrl').textContent = 'WebRTC 回放中: ' + url;
+        });
+
+        player.on(ZLMRTCClient.Events.WEBRTC_OFFER_ANWSER_EXCHANGE_FAILED, e=>{
+            console.error('[RTC] offer/answer 交换失败', e);
+            $('playUrl').textContent = '回放出错: 信令交换失败 ' + ((e && e.msg) || '');
+        });
+
+        player.on(ZLMRTCClient.Events.WEBRTC_ICE_CANDIDATE_ERROR, e=>{
+            console.error('[RTC] ICE 协商错误', e);
+            $('playUrl').textContent =
+                '回放出错: ICE 协商失败（检查 ZLM [rtc] 端口 8000 的 UDP 是否放行）';
+        });
+    }
+
+    function destroyPlayer(){
+        if(player){
+            try{
+                if(playerKind === 'rtc'){
+                    player.close();
+                }else{
+                    player.pause();
+                    player.unload();
+                    player.detachMediaElement();
+                    player.destroy();
+                }
+            }catch(e){}
+
+            player = null;
+            playerKind = null;
+        }
+
+        $('playUrl').textContent = '尚未开始回放';
+    }
+
+    /* 会话类型徽标：直播 / 回放 / 下载 */
+    function typeTag(type){
+        const t = String(type||'-');
+
+        if(t === 'LIVE'){
+            return '<span class="tag gray">直播</span>';
+        }
+
+        if(t === 'PLAYBACK'){
+            return '<span class="tag">回放</span>';
+        }
+
+        if(t === 'DOWNLOAD'){
+            return '<span class="tag orange">下载</span>';
+        }
+
+        return '<span class="tag gray">'+esc(t)+'</span>';
+    }
+
+    async function refreshSessions(){
+        try{
+            const status = await fetchJson('/api/status');
+            applyStatus(status);
+        }catch(e){
+            console.warn('[STATUS]', e);
+        }
+
+        try{
+            const sessions = await fetchJson('/api/playback/sessions') || [];
+
+            trackPlaybackRange(sessions);
+
+            const body = $('sessionBody');
+
+            if(!sessions.length){
+                body.innerHTML =
+                    '<tr><td colspan="8" class="muted">暂无回放会话</td></tr>';
+                return;
+            }
+
+            body.innerHTML = sessions.map(s=>
+                '<tr>'+
+                '<td>'+esc(s.deviceId)+'</td>'+
+                '<td>'+esc(s.channelId)+'</td>'+
+                '<td>'+typeTag(s.type)+'</td>'+
+                '<td class="url">'+esc(s.ssrc||'-')+'</td>'+
+                '<td>'+stateTag(s.state)+'</td>'+
+                '<td>'+esc(s.localPort||'-')+'</td>'+
+                '<td>'+formatEpoch(s.createTime)+'</td>'+
+                '<td>'+
+                    '<button class="btn danger" onclick="stopSession(\''+
+                    esc(s.deviceId)+'\',\''+
+                    esc(s.channelId)+'\')">停止</button>'+
+                '</td>'+
+                '</tr>'
+            ).join('');
+
+        }catch(e){
+            console.warn('[SESSION]', e);
+        }
+    }
+
+    renderNav('playback');
+
+    fillDeviceSelect($('pbDevice')).then(()=>{
+        if(urlDeviceId){
+            $('pbDevice').value = urlDeviceId;
+            $('pbChannel').value = urlDeviceId;
+        }
+    });
+
+    /* 默认时间范围：最近 1 小时 */
+    (function initTimeRange(){
+        const now = new Date();
+        const oneHourAgo = new Date(now.getTime() - 3600 * 1000);
+
+        $('endTime').value = toDatetimeLocal(now);
+        $('startTime').value = toDatetimeLocal(oneHourAgo);
+    })();
+
+    function toDatetimeLocal(d){
+        const pad = n=>String(n).padStart(2, '0');
+
+        return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) +
+            'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    refreshSessions();
+
+    setInterval(refreshSessions, 5000);
+
+    window.addEventListener('beforeunload', ()=>{
+        destroyPlayer();
+    });
+</script>
+
+</body>
+</html>

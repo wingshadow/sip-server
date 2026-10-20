@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>总览 · GB/T 28181 SIP 视频平台</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="container">
+
+    <div id="nav"></div>
+
+    <div class="card">
+        <h1>平台总览</h1>
+
+        <div class="stats">
+            <div class="stat">
+                设备（在线/总数）
+                <b><span id="statOnline" class="green">0</span> / <span id="statDevices">0</span></b>
+            </div>
+            <div class="stat">
+                媒体会话（直播+回放）
+                <b id="statMedia">0</b>
+            </div>
+            <div class="stat">
+                语音会话
+                <b id="statVoice">0</b>
+            </div>
+            <div class="stat">
+                RTP 端口（已用/容量）
+                <b><span id="statPortUsed">0</span> / <span id="statPortFree">0</span></b>
+            </div>
+            <div class="stat">
+                媒体模式
+                <b id="mediaMode" style="font-size:16px">local</b>
+            </div>
+            <div class="stat">
+                告警订阅
+                <b id="statAlarm">0</b>
+            </div>
+            <div class="stat">
+                SIP 服务
+                <b style="font-size:16px" id="statServerId">34020000002000000001</b>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title"><span class="dot"></span>设备列表</div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>设备 ID</th>
+                    <th>名称</th>
+                    <th>厂商</th>
+                    <th>状态</th>
+                    <th>地址</th>
+                    <th>注册时间</th>
+                    <th>目录更新</th>
+                    <th>告警订阅</th>
+                    <th>操作</th>
+                </tr>
+                </thead>
+
+                <tbody id="deviceBody">
+                <tr>
+                    <td colspan="9" class="muted">加载中...</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card" id="queryCard" style="display:none">
+        <div class="title">
+            <span class="dot" style="background:#7c3aed"></span>设备查询结果
+            <span id="queryMeta" class="muted" style="font-weight:400;font-size:13px"></span>
+        </div>
+        <div id="queryBody"></div>
+    </div>
+
+    <div class="card">
+        <div class="title"><span class="dot" style="background:#d97706"></span>告警订阅（SUBSCRIBE，自动续订）</div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>设备 ID</th>
+                    <th>Call-ID</th>
+                    <th>状态</th>
+                    <th>过期（秒）</th>
+                    <th>操作</th>
+                </tr>
+                </thead>
+
+                <tbody id="alarmBody">
+                <tr>
+                    <td colspan="5" class="muted">暂无订阅</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="footer">
+        sip-server · GB/T 28181-2022 接入测试 · 每 5 秒自动刷新
+    </div>
+
+</div>
+
+<script src="/js/auth.js"></script>
+<script src="/js/common.js"></script>
+
+<script>
+    /* 告警订阅表（deviceId -> 订阅信息），设备表订阅列复用 */
+    let alarmMap = {};
+
+    async function refreshStatus(){
+        try{
+            const status = await fetchJson('/api/status');
+
+            applyStatus(status);
+
+            $('statDevices').textContent = status.deviceCount || 0;
+            $('statOnline').textContent = status.onlineDevices || 0;
+            $('statMedia').textContent = status.mediaSessions || 0;
+            $('statVoice').textContent = status.voiceSessions || 0;
+            $('statPortUsed').textContent = status.rtpPortUsed || 0;
+            $('statPortFree').textContent = status.rtpPortCapacity || 0;
+            if(status.serverId){
+                $('statServerId').textContent = status.serverId;
+            }
+
+        }catch(e){
+            console.warn('[STATUS]', e);
+        }
+    }
+
+    async function refreshDevices(){
+        try{
+            const devices = await fetchJson('/api/devices') || [];
+
+            const body = $('deviceBody');
+
+            if(!devices.length){
+                body.innerHTML =
+                    '<tr><td colspan="9" class="muted">暂无注册设备</td></tr>';
+                return;
+            }
+
+            body.innerHTML = devices.map(d=>{
+                const online = d.online === true;
+
+                const sub = alarmMap[d.deviceId];
+
+                return '<tr>'+
+                    '<td>'+esc(d.deviceId)+'</td>'+
+                    '<td>'+esc(d.name||'-')+'</td>'+
+                    '<td>'+esc(d.manufacturer||'-')+'</td>'+
+                    '<td>'+
+                        (online
+                            ?'<span class="tag">ONLINE</span>'
+                            :'<span class="tag gray">OFFLINE</span>')+
+                    '</td>'+
+                    '<td>'+esc(d.host||'-')+':'+esc(d.port||'-')+'</td>'+
+                    '<td>'+formatEpoch(d.registerTime)+'</td>'+
+                    '<td>'+formatEpoch(d.catalogUpdateTime)+'</td>'+
+                    '<td>'+
+                        (sub
+                            ?'<span class="tag">'+(sub.active?'已订阅':'等待确认')+'</span>'
+                            :'<span class="tag gray">未订阅</span>')+
+                    '</td>'+
+                    '<td>'+
+                    '<button class="btn primary" onclick="goLive(\''+
+                    esc(d.deviceId)+'\')">预览</button> '+
+                    '<button class="btn success" onclick="goPlayback(\''+
+                    esc(d.deviceId)+'\')">回放</button> '+
+                    '<button class="btn gray sm" onclick="queryCatalog(\''+
+                    esc(d.deviceId)+'\')">查目录</button> '+
+                    '<button class="btn gray sm" onclick="queryDeviceInfo(\''+
+                    esc(d.deviceId)+'\')">查信息</button> '+
+                    '<button class="btn gray sm" onclick="queryDeviceStatus(\''+
+                    esc(d.deviceId)+'\')">查状态</button> '+
+                    (sub
+                            ?'<button class="btn gray" onclick="unsubscribe(\''+
+                              esc(d.deviceId)+'\')">退订</button>'
+                            :'<button class="btn warning" onclick="subscribe(\''+
+                              esc(d.deviceId)+'\')">订阅告警</button>')+
+                    '</td>'+
+                    '</tr>';
+            }).join('');
+
+        }catch(e){
+            console.warn('[DEVICE]', e);
+        }
+    }
+
+    async function refreshAlarms(){
+        try{
+            const subs = await fetchJson('/api/alarm/subscriptions') || {};
+
+            alarmMap = subs;
+
+            $('statAlarm').textContent = Object.keys(subs).length;
+
+            const body = $('alarmBody');
+            const list = Object.keys(subs).map(k=>subs[k]);
+
+            if(!list.length){
+                body.innerHTML =
+                    '<tr><td colspan="5" class="muted">暂无订阅</td></tr>';
+                return;
+            }
+
+            body.innerHTML = list.map(s=>
+                '<tr>'+
+                '<td>'+esc(s.deviceId)+'</td>'+
+                '<td class="url">'+esc(s.callId||'-')+'</td>'+
+                '<td>'+
+                    (s.active
+                        ?'<span class="tag">已订阅</span>'
+                        :'<span class="tag orange">等待确认</span>')+
+                '</td>'+
+                '<td>'+esc(s.expires||'-')+'</td>'+
+                '<td>'+
+                    '<button class="btn gray" onclick="unsubscribe(\''+
+                    esc(s.deviceId)+'\')">退订</button>'+
+                '</td>'+
+                '</tr>'
+            ).join('');
+
+        }catch(e){
+            console.warn('[ALARM]', e);
+        }
+    }
+
+    async function subscribe(deviceId){
+        try{
+            const r = await postJson('/api/alarm/subscribe', {deviceId});
+            if(!r.success){
+                alert('订阅失败: ' + (r.message || '未知错误'));
+            }
+        }catch(e){
+            alert('订阅请求异常: ' + e.message);
+        }
+
+        refreshAlarms();
+        refreshDevices();
+    }
+
+    async function unsubscribe(deviceId){
+        try{
+            await postJson('/api/alarm/unsubscribe', {deviceId});
+        }catch(e){
+            console.warn('[ALARM]', e);
+        }
+
+        refreshAlarms();
+        refreshDevices();
+    }
+
+    /* ===== 设备主动查询（Catalog / DeviceInfo / DeviceStatus）=====
+     * 后端为"发送 → 聚合 → 最多等待 10s → 返回"的同步语义，
+     * 直接 await 即可；complete=false 表示设备分包未收全或超时，
+     * 结果按已收到的部分展示并标注。 */
+    async function queryCatalog(deviceId){
+        const r = await queryDevice('/api/devices/'+encodeURIComponent(deviceId)+'/catalog/query', deviceId);
+
+        if(!r){
+            return;
+        }
+
+        const meta = 'Catalog · 设备 '+deviceId+' · 通道 '+(r.channelCount||0)+
+            (r.sumNum ? ' / '+r.sumNum : '')+
+            (r.complete ? '' : '（未收全/超时，仅展示已收到部分）');
+
+        const channels = r.channels || [];
+
+        if(!channels.length){
+            showQuery(meta, '<p class="muted">未查询到通道</p>');
+            return;
+        }
+
+        const rows = channels.map(c=>
+            '<tr>'+
+            '<td>'+esc(c.channelId||c.deviceId||'-')+'</td>'+
+            '<td>'+esc(c.name||'-')+'</td>'+
+            '<td>'+esc(c.parentId||'-')+'</td>'+
+            '<td>'+esc(c.manufacturer||'-')+'</td>'+
+            '<td>'+esc(c.model||'-')+'</td>'+
+            '<td>'+
+                (String(c.status||'').toUpperCase()==='ON'
+                    ?'<span class="tag">ON</span>'
+                    :'<span class="tag gray">'+esc(c.status||'UNKNOWN')+'</span>')+
+            '</td>'+
+            '</tr>'
+        ).join('');
+
+        showQuery(meta,
+            '<div class="table-wrap"><table>'+
+            '<thead><tr><th>通道 ID</th><th>名称</th><th>父节点</th><th>厂商</th><th>型号</th><th>状态</th></tr></thead>'+
+            '<tbody>'+rows+'</tbody></table></div>');
+    }
+
+    async function queryDeviceInfo(deviceId){
+        await queryFields('/api/devices/'+encodeURIComponent(deviceId)+'/info/query',
+            deviceId, 'DeviceInfo', '设备信息');
+    }
+
+    async function queryDeviceStatus(deviceId){
+        await queryFields('/api/devices/'+encodeURIComponent(deviceId)+'/status/query',
+            deviceId, 'DeviceStatus', '设备状态');
+    }
+
+    /* 设备信息/状态查询：Result + 扁平字段（后端 fields.put 全部展开在同一层） */
+    async function queryFields(url, deviceId, type, label){
+        const r = await queryDevice(url, deviceId);
+
+        if(!r){
+            return;
+        }
+
+        const skip = {deviceId:1, sn:1, type:1, complete:1};
+
+        const rows = Object.keys(r).filter(k=>!skip[k]).map(k=>
+            '<tr><td style="width:160px;color:#606266">'+esc(k)+'</td>'+
+            '<td>'+esc(r[k]||'-')+'</td></tr>'
+        ).join('');
+
+        const meta = label+' · 设备 '+deviceId+
+            (r.complete ? '' : '（未收全/超时）');
+
+        showQuery(meta,
+            '<table><tbody>'+rows+'</tbody></table>');
+    }
+
+    /* 公共：发起查询 + 统一错误提示；失败返回 null。
+       注意：查询/控制类接口均为 POST-only，必须用 postJson，
+       用 fetchJson（GET）会被 Spring 拦成 405。 */
+    async function queryDevice(url, deviceId){
+        try{
+            const r = await postJson(url, {});
+
+            if(r && r.code!==undefined && Number(r.code)!==0){
+                alert('查询失败: ' + (r.message || '未知错误'));
+                return null;
+            }
+
+            return r;
+
+        }catch(e){
+            alert('查询异常: ' + e.message);
+            return null;
+        }
+    }
+
+    function showQuery(meta, html){
+        $('queryMeta').textContent = meta;
+        $('queryBody').innerHTML = html;
+        $('queryCard').style.display = '';
+
+        $('queryCard').scrollIntoView({behavior:'smooth', block:'nearest'});
+    }
+
+    function goLive(deviceId){
+        location.href = '/live.html?deviceId=' + encodeURIComponent(deviceId);
+    }
+
+    function goPlayback(deviceId){
+        location.href = '/playback.html?deviceId=' + encodeURIComponent(deviceId);
+    }
+
+    function $(id){
+        return document.getElementById(id);
+    }
+
+    renderNav('index');
+
+    refreshStatus();
+    refreshDevices();
+    refreshAlarms();
+
+    setInterval(refreshStatus, 5000);
+    setInterval(refreshDevices, 10000);
+    setInterval(refreshAlarms, 10000);
+</script>
+
+</body>
+</html>
