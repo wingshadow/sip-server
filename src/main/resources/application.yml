@@ -12,6 +12,10 @@ sip:
     ip: 192.168.8.104
     # 设备心跳超时（秒），超过则视为离线
     heartbeat-timeout: 180
+    # SIP 域名：401 挑战 WWW-Authenticate 的 realm 与注册摘要计算所用域，
+    # 默认识别为编码前 10 位（3402000000）；须与设备侧显示的域名/realm 一致，
+    # 否则摘要不匹配无法注册（详见 README 11.16）
+    domain: 3402000000
 
     # ===== SIP 注册鉴权（Digest，RFC 2617 / GB/T 28181）=====
     # 设备密码：留空则任何设备均可注册（跳过鉴权，默认行为）。
@@ -58,6 +62,12 @@ sip:
     local:
       port-pool-start: 30000
       port-pool-end: 30099
+      # ffmpeg 可执行文件：填 PATH 中的命令名或绝对路径（local 媒体链路依赖）
+      ffmpeg-path: ffmpeg
+      # HLS 切片输出目录（预留键，当前代码未读取；/hls/** 静态映射用 app.hls-dir）
+      # hls-dir: ./hls
+      # 录像下载（MP4）输出目录：.part 为下载中临时文件，完成后改名去后缀
+      download-dir: ./downloads
       # 录像下载倍速（GB/T 28181-2022 SDP a=downloadspeed）：
       # INVITE 携带 a=downloadspeed:N 协商，会话建立后再经 SIP INFO
       # （Application/MANSRTSP）下发 SCALE N 兜底；设备不支持时按 1x 推流。
@@ -141,4 +151,14 @@ logging:
 app:
   # HLS 切片输出目录（ffmpeg 转码产物，页面通过 /hls/** 访问）
   hls-dir: ./hls
+
+  # 页面登录鉴权：仅保护管理页面（index/live/playback/voice.html），
+  # 不影响 /api/** 内部接口与 /api/v1/** Open API（后者由 sip.openapi 的 X-API-Key 独立鉴权）
+  auth:
+    # 登录用户名
+    username: admin
+    # 登录密码（与代码默认一致；生产建议用环境变量覆盖，如 APP_AUTH_PASSWORD）
+    password: "Raonecloud@2026#"
+    # 登录 token 有效期（小时），过期后需重新登录
+    token-ttl-hours: 12
 

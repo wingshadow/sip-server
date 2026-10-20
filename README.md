@@ -239,6 +239,7 @@ sip:
     port: 5060                  # 信令 UDP 端口
     ip: 192.168.1.100           # 对外通告 IP（注册 Contact / 点播 SDP），须摄像头可达
     heartbeat-timeout: 180      # 设备心跳超时（秒），超时标记离线
+    domain: 3402000000          # SIP 域名（401 挑战 realm / 注册摘要域），须与设备侧一致
 
     # ===== SIP 注册鉴权（Digest，RFC 2617 / GB/T 28181）=====
     # 留空则任何设备均可注册（跳过鉴权，默认行为）
@@ -257,8 +258,24 @@ sip:
     api-keys:                   # 合法密钥列表（多接入方各配一把，生产环境务必配置）
       - 9f2c7a51e4b84d0f8a3c6d5e2f1b0a99
 
+  media:                        # 媒体面配置
+    mode: local                 # local=自研链路（RtpReceiver+ffmpeg+FLV）；zlm=ZLMediaKit 接管
+    local:
+      port-pool-start: 30000    # RTP 接收端口池起（并发媒体会话上限=池大小）
+      port-pool-end: 30099      # 不得与语音端口池（默认 30100 起）重叠
+      ffmpeg-path: ffmpeg       # PATH 中的命令名或绝对路径
+      download-dir: ./downloads  # 录像下载（MP4）产物目录
+      download-speed: 2         # 下载倍速：时间轴倍速≠文件压缩率，低端 IPC 建议 1~2
+      download-preset: medium   # MP4 转码 x264 preset（离线转码 medium 体积最优）
+      download-crf: 26          # MP4 转码 CRF（0~51，越小越清晰体积越大）
+
 app:
-  hls-dir: D:/workspace_sip/sip-server/hls   # HLS 切片输出目录（/hls/** 访问）
+  hls-dir: ./hls                # HLS 切片输出目录（/hls/** 访问）
+
+  auth:                         # 页面登录鉴权（仅保护管理页面，不影响 /api/** 与 /api/v1/**）
+    username: admin             # 登录用户名
+    password: "change-me"       # 登录密码（生产建议环境变量 APP_AUTH_PASSWORD 覆盖）
+    token-ttl-hours: 12         # 登录 token 有效期（小时），过期需重新登录
 
 logging:
   level:
@@ -274,6 +291,7 @@ logging:
 | `sip.server.port` | `5060` | SIP UDP 端口 |
 | `sip.server.ip` | `127.0.0.1` | **部署必改项**：SDP 中通告给摄像头的本机地址 |
 | `sip.server.heartbeat-timeout` | `180` | 心跳超时（秒），`DeviceRegistry` 每 10s 巡检一次 |
+| `sip.server.domain` | `3402000000` | SIP 域名：401 挑战 `WWW-Authenticate` 的 realm 与注册摘要计算所用域，须与设备侧显示的域名一致 |
 | `sip.server.password` | 空 | 设备密码（注册 Digest 鉴权）；**为空则跳过鉴权** |
 | `sip.server.device-passwords` | 空 | 按设备编号的密码 Map（key=20 位国标编码，`*`=通配），优先于 `password` |
 | `sip.server.auth-enabled` | 自动 | 鉴权开关；不配则按 `password` 非空自动判断 |
@@ -284,7 +302,13 @@ logging:
 | `sip.server.alarm-webhook-url` | `""` | 告警推送目标 URL（如 `http://ops.example.com/api/gb28181/alarm`） |
 | `sip.server.alarm-webhook-timeout-ms` | `3000` | 告警推送连接/读取超时（毫秒） |
 | `app.hls-dir` | `./hls` | （遗留）HLS 目录静态映射根目录，当前转码仅 FLV 输出 |
+| `app.auth.username` | `admin` | 页面登录用户名；仅保护管理页面（index/live/playback/voice.html），不影响 `/api/**` 与 `/api/v1/**` |
+| `app.auth.password` | 内置默认值 | 页面登录密码；生产建议用环境变量 `APP_AUTH_PASSWORD` 覆盖 |
+| `app.auth.token-ttl-hours` | `12` | 登录 token 有效期（小时），过期后需重新登录 |
 | `sip.media.mode` | `local` | 媒体面模式：`local`=自研链路（RtpReceiver+ffmpeg+FLV 广播）；`zlm`=ZLMediaKit 接管媒体面 |
+| `sip.media.local.port-pool-start` / `port-pool-end` | `30000` / `30099` | 本地 RTP 接收端口池，池大小=最大并发媒体会话数（默认 100）；不得与语音端口池（默认 30100 起）重叠 |
+| `sip.media.local.ffmpeg-path` | `ffmpeg` | ffmpeg 可执行文件（PATH 中的命令名或绝对路径），local 媒体链路依赖 |
+| `sip.media.local.download-dir` | `./downloads` | 录像下载（MP4）输出目录（`.part` 为下载中临时文件，完成后改名去后缀） |
 | `sip.media.local.download-speed` | `4` | 录像下载倍速（**时间轴倍速≠文件压缩率**：收到仍是完整录像，仅传输耗时缩短为 1/N，设备侧代价线性上升，低端 IPC 建议 1~2） |
 | `sip.media.local.download-preset` | `medium` | 下载 MP4 转码 preset（x264 速度档，离线转码下 medium 体积最优；多路并发可退 `veryfast`/`faster`） |
 | `sip.media.local.download-crf` | `26` | 下载 MP4 转码 CRF（0~51，越小越清晰体积越大；26 对监控内容比旧默认小 40~55%） |

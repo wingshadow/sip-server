@@ -782,6 +782,24 @@ AVC Sequence Header
 
 开始解析。
 
+**为什么必须补这段数据（缺什么会怎样）**：FLV 不是裸流，而是带状态的 tag 序列，播放器的解析链严格按 tag 顺序推进：
+
+```text
+[FLV Header 9B]  "FLV" 签名 + 版本 + flags
+[PreviousTagSize0 = 0]
+[Tag0: onMetaData]       宽高 / 帧率 / 编码格式
+[Tag1: AVC seq header]   SPS + PPS，解码器的"开机钥匙"
+[Tag2: 首帧（通常 IDR）]
+[Tag3...: 实时帧]        每个 tag 后还跟 4 字节 PreviousTagSize
+```
+
+中途加入的客户端如果只从实时位置收数据，会缺四样东西：
+
+1. **FLV Header（最容易补，但确实必需）**：严格解析器（ffplay 等）第一件事就是校验 `"FLV"` 签名，不认直接拒播；flv.js 的 demuxer 也靠它进入解析状态。
+2. **AVC Sequence Header（这才是关键，缺了必黑屏）**：H.264 的 SPS（分辨率 / profile / level / 帧场编码）和 PPS（熵编码方式 / 参考帧管理）不在每个视频帧里重复携带，只在序列开始时出现一次；ffmpeg 把 RTP 流转封装成 FLV 时，seq header 也只写一次（在最前面）。中途接入的客户端拿不到 SPS/PPS，解码器无法初始化——哪怕是 IDR 关键帧也解不了，典型表现就是解码报错后一直无画面。
+3. **onMetaData（锦上添花）**：缺了它播放器不知道 width/height/framerate，flv.js 能勉强解，但时长 / seek 行为异常。
+4. **关键帧对齐**：即使有了 SPS/PPS，实时数据若正处在 P 帧中间，缺参考帧，要等下一个 IDR 才出画面（GB28181 IPC 一般 1~2s 一个 GOP，会黑 / 花屏几秒）。
+
 所以需要保存流开始部分：
 
 ```text
@@ -793,6 +811,15 @@ bootstrap
     ↓
 再发送实时数据
 ```
+
+**为什么不是给新客户端重开一路 ffmpeg**：自研链路是单路 ffmpeg 吃设备 RTP，`FlvBroadcast` 的设计目标就是多客户端共享一个 stdout。每来一个新客户端就重启 ffmpeg 意味着：重新等设备推流（秒级延迟）、CPU 翻倍、设备侧可能还要重新协商。因此把流最开头那段字节缓存在内存里即可。
+
+代码对应：`readLoop` 每次读到 ffmpeg stdout 数据后先 `appendBootstrap()`，把最开头的一段（默认累计 64KB 判定就绪、上限 2MB）存入内存，这段天然包含 FLV Header + Metadata + seq header + 开头一小段帧；`subscribe()` 则在 `broadcastLock` 保护下原子完成"入列 + 投递 bootstrap 快照"，保证新客户端队列顺序恒为 `[bootstrap..., 实时...]`（乱序问题详见 5.7.2）。
+
+**两个边界**：
+
+- bootstrap 存的是"流开头"而不是"最近一个完整 GOP"，所以新客户端先看一小段从流起点开始的数据、再跳到实时。直播场景可接受；要做到严格无缝，需要缓存最近一个 GOP 并对齐 IDR，复杂度高不少。
+- 64KB 的就绪阈值是经验值：header + metadata + seq header 通常只有几百字节到几 KB，64KB 基本保证已经拿到 seq header，同时还多带了一点开头数据兜底。
 
 当前参数：
 
@@ -1302,6 +1329,8 @@ AVC Sequence Header
 ```
 
 所以使用 Bootstrap。
+
+核心原因：AVC Sequence Header（SPS/PPS）只在流开头出现一次，中途接入的客户端缺它，即使收到 IDR 关键帧也无法解码；FLV Header 与 onMetaData 同样缺失。完整分析（tag 序列、四类缺失、为何不重开 ffmpeg、边界）见 5.7.1。
 
 ---
 
