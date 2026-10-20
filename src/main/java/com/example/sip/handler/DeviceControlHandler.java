@@ -49,8 +49,7 @@ public class DeviceControlHandler {
     private static final int PTZ_HEAD_0F = 0x0F;
     private static final int PTZ_ADDRESS = 0x01;
 
-    /** 速度默认值与范围（数据1/2/3 均为 0x00~0xFF 全字节相对速度） */
-    private static final int DEFAULT_SPEED = 100;
+    /** 速度范围（数据1/2/3 均为 0x00~0xFF 全字节相对速度） */
     private static final int MAX_SPEED = 255;
 
     /** 预置位命令字 */
@@ -98,22 +97,28 @@ public class DeviceControlHandler {
      * @return success / action / ptzCmd（实际下发的十六进制命令，便于前端展示与排查）
      */
     public Map<String, Object> ptz(String deviceId, String channelId, String action, int speed) {
-        Integer bit = PTZ_ACTIONS.get(action);
         boolean stop = "stop".equalsIgnoreCase(action);
-        if (bit == null && !stop) {
-            throw new IllegalArgumentException("不支持的云台动作: " + action
-                    + "，可选: " + PTZ_ACTIONS.keySet() + " / stop");
+        int bitValue;
+        if (stop) {
+            bitValue = 0;
+        } else {
+            Integer bit = PTZ_ACTIONS.get(action);
+            if (bit == null) {
+                throw new IllegalArgumentException("不支持的云台动作: " + action
+                        + "，可选: " + PTZ_ACTIONS.keySet() + " / stop");
+            }
+            bitValue = bit;
         }
 
-        int cmd = stop ? 0x00 : bit;
         /* 速度位按动作类别归属（国标语义）：
            方向类(bit0-3)填水平/垂直速度、变倍位清零；
            光学类(bit4-7：变倍/光圈/聚焦)填变倍速度、水平/垂直清零。
            无关速度位非零会被部分固件判为脏数据直接丢弃指令。 */
+        int cmd = stop ? 0x00 : bitValue;
         int hSpeed, vSpeed, zSpeed;
         if (stop) {
             hSpeed = 0; vSpeed = 0; zSpeed = 0;
-        } else if (bit <= 0x08) {
+        } else if (bitValue <= 0x08) {
             hSpeed = clamp(speed, 1, MAX_SPEED);
             vSpeed = hSpeed;
             zSpeed = 0;

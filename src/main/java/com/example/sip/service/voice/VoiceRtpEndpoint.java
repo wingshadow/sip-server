@@ -106,22 +106,37 @@ public class VoiceRtpEndpoint {
         // 对讲/广播 SDP 通告 TCP/RTP/AVP + a=setup:passive，设备按 RFC 4145
         // 应答 a=setup:active 后主动连接本端口，RTP 走该 TCP 连接收发。
         // 监听失败不阻断会话——设备 200 OK 若应答 UDP，仍走上面的 UDP 通道。
-        try {
-            ServerSocket server = new ServerSocket();
-            server.setReuseAddress(true);
-            server.bind(new InetSocketAddress(port));
-            ss.serverSocket = server;
+        // ServerSocket 由 createTcpListener 返回后挂到 ss.serverSocket，
+        // 统一在 closeTcp（release / @PreDestroy）关闭，bind 内不关。
+        ss.serverSocket = createTcpListener(port, key);
+        if (ss.serverSocket != null) {
             Thread at = new Thread(() -> acceptLoop(ss), "voice-rtp-tcp-" + key);
             at.setDaemon(true);
             at.start();
-            log.info("[VOICE] TCP媒体监听已启动: key={} port={}", key, port);
-        } catch (IOException e) {
-            log.warn("[VOICE] TCP媒体监听失败(继续等待UDP回退): key={} port={} err={}",
-                    key, port, e.getMessage());
         }
 
         log.info("[VOICE] 会话RTP端口已绑定: key={} port={}", key, port);
         return true;
+    }
+
+    /**
+     * 创建 TCP 媒体监听并绑定会话端口；失败返回 null（不阻断会话，等待 UDP 回退）。
+     *
+     * <p>返回值由调用方挂到 {@link SessionSocket#serverSocket}，关闭统一走
+     * {@link #closeTcp}（release / @PreDestroy 两条路径）。
+     */
+    private ServerSocket createTcpListener(int port, String key) {
+        try {
+            ServerSocket server = new ServerSocket();
+            server.setReuseAddress(true);
+            server.bind(new InetSocketAddress(port));
+            log.info("[VOICE] TCP媒体监听已启动: key={} port={}", key, port);
+            return server;
+        } catch (IOException e) {
+            log.warn("[VOICE] TCP媒体监听失败(继续等待UDP回退): key={} port={} err={}",
+                    key, port, e.getMessage());
+            return null;
+        }
     }
 
     /**

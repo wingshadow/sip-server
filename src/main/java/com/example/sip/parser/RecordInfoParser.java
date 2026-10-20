@@ -9,7 +9,6 @@ import org.w3c.dom.NodeList;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.ByteArrayInputStream;
-import java.nio.charset.Charset;
 
 /**
  * GB/T 28181 RecordInfo 录像查询应答（MANSCDP+xml）解析器：
@@ -17,8 +16,6 @@ import java.nio.charset.Charset;
  * XML 解析禁 DOCTYPE 与外部实体（XXE 防护），按 XML 声明处理编码（如 GB18030）。
  */
 public final class RecordInfoParser {
-
-    private static final Charset GB18030 = Charset.forName("GB18030");
 
     /** 工具类禁止实例化 */
     private RecordInfoParser() {

@@ -7,8 +7,6 @@ import com.example.sip.sip.SdpParser;
 import com.example.sip.sip.SdpParser.SdpInfo;
 import com.example.sip.sip.SipResponseBuilder;
 import io.netty.channel.ChannelHandlerContext;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.net.InetSocketAddress;
@@ -26,8 +24,6 @@ import java.nio.charset.StandardCharsets;
  */
 @Component
 public class VoiceSignalHandler {
-
-    private static final Logger log = LoggerFactory.getLogger(VoiceSignalHandler.class);
 
     private final SipServerProperties props;
     private final VoiceService voiceService;

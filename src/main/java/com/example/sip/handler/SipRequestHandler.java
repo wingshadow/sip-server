@@ -44,7 +44,6 @@ public class SipRequestHandler {
     private final RegisterHandler registerHandler;
     private final DeviceMessageHandler deviceMessageHandler;
     private final AlarmSubscribeHandler alarmSubscribeHandler;
-    private final RecordQueryHandler recordQueryHandler;
     private final MediaSignalHandler mediaSignalHandler;
     private final VoiceSignalHandler voiceSignalHandler;
 
@@ -53,7 +52,6 @@ public class SipRequestHandler {
                              RegisterHandler registerHandler,
                              DeviceMessageHandler deviceMessageHandler,
                              AlarmSubscribeHandler alarmSubscribeHandler,
-                             RecordQueryHandler recordQueryHandler,
                              MediaSignalHandler mediaSignalHandler,
                              VoiceSignalHandler voiceSignalHandler) {
         this.props = props;
@@ -61,7 +59,6 @@ public class SipRequestHandler {
         this.registerHandler = registerHandler;
         this.deviceMessageHandler = deviceMessageHandler;
         this.alarmSubscribeHandler = alarmSubscribeHandler;
-        this.recordQueryHandler = recordQueryHandler;
         this.mediaSignalHandler = mediaSignalHandler;
         this.voiceSignalHandler = voiceSignalHandler;
     }

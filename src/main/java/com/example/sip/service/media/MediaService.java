@@ -489,8 +489,10 @@ public class MediaService {
             SdpInfo peerSdp = SdpParser.parse(msg.getBodyText(StandardCharsets.UTF_8));
             s.setPeerSdp(peerSdp.toSummary());
             s.setPeerPayload(peerSdp.mediaPayloads);
-            // 与 1.0 一致：SSRC 在 INVITE 时生成并通告（SDP y=），
-            // 200 OK 不覆盖——RtpReceiver 按该值登记匹配，覆盖会导致会话 SSRC 不一致
+            // 与 1.0 一致：SSRC 在 INVITE 时生成并通告（SDP y=），200 OK 不覆盖。
+            // RtpReceiver 按端口归属（每会话专属 socket），不按 SSRC 匹配；真正的
+            // 风险是覆盖后 ACK/BYE/INFO 回显、zlm streamId、接口返回三方与
+            // INVITE 通告值不一致
         } catch (Exception e) {
             log.warn("[28181] 200 OK SDP 解析失败: callId={} error={}",
                     s.getCallId(), e.getMessage());

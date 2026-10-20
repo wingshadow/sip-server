@@ -16,7 +16,6 @@ import org.springframework.stereotype.Component;
 import org.w3c.dom.Element;
 
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -69,7 +68,6 @@ public class AlarmSubscribeHandler {
         String callId;
         String fromTag;
         volatile String toTag;
-        volatile long cseq;
         volatile int expires;
         volatile boolean active;
         volatile long lastStateTime;
@@ -119,7 +117,6 @@ public class AlarmSubscribeHandler {
         info.deviceId = deviceId;
         info.callId = callId;
         info.fromTag = fromTag;
-        info.cseq = currentCseq;
         info.expires = SUBSCRIBE_EXPIRES;
         info.active = false;
         info.lastStateTime = System.currentTimeMillis();
@@ -322,7 +319,6 @@ public class AlarmSubscribeHandler {
 
         send(channel, new InetSocketAddress(device.getHost(), device.getPort()), packet);
 
-        info.cseq = currentCseq;
         info.expires = SUBSCRIBE_EXPIRES;
         info.lastStateTime = now;
 
