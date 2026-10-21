@@ -110,6 +110,15 @@ public class ZlmMediaService {
      */
     private static final long FFMPEG_DOWNLOAD_WAIT_MILLIS = 60_000L;
 
+    /**
+     * 下载 ffmpeg 硬超时下限（毫秒，30 分钟）。
+     *
+     * <p>与 MediaService local 模式 watchdog 同语义：等待上限取
+     * max(本值, 预期时长(按倍速折算) × 10)。防止 ZLM 不断流（设备故障
+     * 持续推流 / 无观看者超时策略关闭）时等待线程在无超时阻塞上永久挂起。
+     */
+    private static final long DOWNLOAD_HARD_TIMEOUT_MIN_MILLIS = 1_800_000L;
+
     /** 下载文件名时间格式（与 local 模式一致，避免两模式文件名风格割裂）。 */
     private static final DateTimeFormatter DL_NAME_TIME =
             DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
@@ -487,6 +496,16 @@ public class ZlmMediaService {
         // 的 From 头全是字面量 tag=null，严格设备可能判 dialog 非法而终话
         s.setFromTag(SipRequestBuilder.newTag());
         s.setType(playback ? StreamSession.Type.PLAYBACK : StreamSession.Type.LIVE);
+        // 回放/下载区间存入会话（此前漏存导致三处问题）：
+        // ① startPlaybackOrDownload 幂等复用比较 getPlaybackStart()==startTime
+        //    永远不命中（恒 0），同区间重复请求每次都 BYE+INVITE 拆建——
+        //    恰是该方法注释声明的"摄像机宕机典型诱因"；
+        // ② 回放控制 resume/seek 的 MANSRTSP PLAY 区间无数据（PLAY 0-0）；
+        // ③ 下载硬超时的预期时长推算恒走 30 分钟兜底
+        if (playback) {
+            s.setPlaybackStart(startTime);
+            s.setPlaybackEnd(endTime);
+        }
         s.setZlm(true);
         // 这是公共 Multiplex RTP Server 的 ID
         s.setZlmRequestStreamId(FIXED_RTP_SERVER_ID);
@@ -635,9 +654,11 @@ public class ZlmMediaService {
                     e
             );
         }
-        // 下载会话：等 ffmpeg 优雅退出（ZLM 已断流 → HTTP-FLV EOF）并收尾 MP4
+        // 下载会话：等 ffmpeg 优雅退出（ZLM 已断流 → HTTP-FLV EOF）并收尾 MP4。
+        // 优雅等待(最长60s)绝不能在会话锁内同步执行——否则同通道的点播/回放/
+        // 重新下载会被阻塞最多 60s，故异步收尾（finalize 幂等且有锁保护）
         if (s.getType() == StreamSession.Type.DOWNLOAD) {
-            stopZlmDownloadFfmpeg(s);
+            stopZlmDownloadFfmpegAsync(s);
         }
         s.setState(
                 StreamSession.State.STOPPED
@@ -850,18 +871,33 @@ public class ZlmMediaService {
 
     /** 等待 ffmpeg 自然退出（设备推流结束）并收尾 MP4。 */
     private void awaitZlmFfmpegExit(StreamSession s, Process p) {
+        // 硬上限：预期时长(按倍速折算)×10，最短 30 分钟。
+        // 无上限 waitFor 在 ZLM 不断流时（设备故障持续推流）会永久阻塞本线程
+        long expected = s.getPlaybackEnd() > s.getPlaybackStart()
+                ? (long) ((s.getPlaybackEnd() - s.getPlaybackStart())
+                        / Math.max(s.getPlaybackScale(), 0.1) * 1000.0)
+                : 0L;
+        long maxWait = Math.max(expected * 10, DOWNLOAD_HARD_TIMEOUT_MIN_MILLIS);
         try {
-            int code = p.waitFor();
-            log.info("[ZLM] 下载 ffmpeg 退出: callId={} exit={} file={}",
-                    s.getCallId(), code, s.getDownloadFileName());
+            if (!p.waitFor(maxWait, TimeUnit.MILLISECONDS)) {
+                log.warn("[ZLM] 下载 ffmpeg 硬超时({}ms)未退出，强制结束(文件可能不完整): "
+                                + "callId={} file={}",
+                        maxWait, s.getCallId(), s.getDownloadFileName());
+                p.destroyForcibly();
+                p.waitFor(3, TimeUnit.SECONDS);
+            } else {
+                log.info("[ZLM] 下载 ffmpeg 退出: callId={} exit={} file={}",
+                        s.getCallId(), p.exitValue(), s.getDownloadFileName());
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            p.destroyForcibly();
         } finally {
             finalizeZlmDownload(s);
             // 设备推流结束（ZLM 断开 HTTP-FLV → ffmpeg EOF）即下载完成：
             // 收尾会话（BYE + 关闭 ZLM 媒体流 + STOPPED），避免会话表残留
-            // 影响下次同时间段请求的复用判断。ffmpeg 已退出，cleanup 内的
-            // stopZlmDownloadFfmpeg 会立即返回（finalize 幂等，无二次收尾风险）
+            // 影响下次同时间段请求的复用判断。cleanup 内的异步收尾对已退出
+            // 进程会立即返回（finalize 幂等且有锁保护，无二次收尾风险）
             stop(s.getDeviceId(), s.getChannelId());
         }
     }
@@ -871,14 +907,21 @@ public class ZlmMediaService {
      *
      * <p>输入是 HTTP-FLV（无 stdin 句柄），不能像 local 的 pipe 管道那样
      * 关 stdin 触发 EOF；ZLM 侧 MediaSource 已由上层 closeStreams 注销，
-     * ffmpeg 的 HTTP 连接随之 EOF，通常已自行退出或即将退出。此处等待
-     * 优雅退出（含 moov/faststart 重排），超时才强杀兜底（此时文件已损坏，
-     * 仅防线程/进程泄漏）。
+     * ffmpeg 的 HTTP 连接随之 EOF，通常已自行退出或即将退出。
+     *
+     * <p>本方法在会话锁内被调用，优雅退出等待（含 moov/faststart 重排，
+     * 最长 60s）提交到 ffmpegExecutor 异步执行，避免阻塞同通道后续操作；
+     * 超时才强杀兜底（此时文件已损坏，仅防线程/进程泄漏）。
      */
-    private void stopZlmDownloadFfmpeg(StreamSession s) {
+    private void stopZlmDownloadFfmpegAsync(StreamSession s) {
         Process p = s.getFfmpeg();
         s.setFfmpeg(null);
-        if (p != null) {
+        if (p == null) {
+            // 无进程可等（如 awaitZlmFfmpegExit 已收尾）：仅做幂等收尾
+            finalizeZlmDownload(s);
+            return;
+        }
+        ffmpegExecutor.submit(() -> {
             try {
                 if (!p.waitFor(FFMPEG_DOWNLOAD_WAIT_MILLIS, TimeUnit.MILLISECONDS)) {
                     log.warn("[ZLM] 下载 ffmpeg 优雅退出超时({}ms)，强制结束: callId={}",
@@ -890,8 +933,8 @@ public class ZlmMediaService {
                 p.destroyForcibly();
                 Thread.currentThread().interrupt();
             }
-        }
-        finalizeZlmDownload(s);
+            finalizeZlmDownload(s);
+        });
     }
 
     /**
@@ -901,34 +944,41 @@ public class ZlmMediaService {
      * 持有 .part 句柄时 Files.move 会 sharing violation，退化为复制
      * （读 .part 不受锁影响）。幂等：重复调用/最终文件已存在时安全。
      */
+    /** 收尾互斥锁：ffmpeg 自然退出与主动停止两条路径并发收尾时串行化。 */
+    private final Object downloadFinalizeLock = new Object();
+
     private void finalizeZlmDownload(StreamSession s) {
-        try {
-            Path dir = Paths.get(mediaProps.getLocal().getDownloadDir())
-                    .toAbsolutePath().normalize();
-            Path part = dir.resolve(s.getDownloadFileName() + ".part");
-            Path done = dir.resolve(s.getDownloadFileName());
-            if (Files.exists(part) && !Files.exists(done)) {
-                try {
-                    Files.move(part, done, StandardCopyOption.REPLACE_EXISTING);
-                } catch (Exception moveErr) {
-                    Files.copy(part, done, StandardCopyOption.REPLACE_EXISTING);
-                    log.info("[ZLM] 下载完成(复制收尾，.part由下载端关闭后清理): {}",
-                            s.getDownloadFileName());
-                    return;
+        // awaitZlmFfmpegExit（自然退出）与异步主动收尾可能并发到达：
+        // 加锁串行化，避免对同一 .part 双重 move/copy 竞态
+        synchronized (downloadFinalizeLock) {
+            try {
+                Path dir = Paths.get(mediaProps.getLocal().getDownloadDir())
+                        .toAbsolutePath().normalize();
+                Path part = dir.resolve(s.getDownloadFileName() + ".part");
+                Path done = dir.resolve(s.getDownloadFileName());
+                if (Files.exists(part) && !Files.exists(done)) {
+                    try {
+                        Files.move(part, done, StandardCopyOption.REPLACE_EXISTING);
+                    } catch (Exception moveErr) {
+                        Files.copy(part, done, StandardCopyOption.REPLACE_EXISTING);
+                        log.info("[ZLM] 下载完成(复制收尾，.part由下载端关闭后清理): {}",
+                                s.getDownloadFileName());
+                        return;
+                    }
+                    log.info("[ZLM] 下载完成: {}", s.getDownloadFileName());
+                } else if (Files.exists(part)) {
+                    // 最终文件已存在（重复下载同一时间段）：清理本轮 .part 残留，
+                    // 避免下载列表出现重复条目。ffmpeg 已退出，删除不会因句柄占用失败
+                    try {
+                        Files.deleteIfExists(part);
+                    } catch (Exception ignore) {
+                        // 删除失败不影响主流程
+                    }
                 }
-                log.info("[ZLM] 下载完成: {}", s.getDownloadFileName());
-            } else if (Files.exists(part)) {
-                // 最终文件已存在（重复下载同一时间段）：清理本轮 .part 残留，
-                // 避免下载列表出现重复条目。ffmpeg 已退出，删除不会因句柄占用失败
-                try {
-                    Files.deleteIfExists(part);
-                } catch (Exception ignore) {
-                    // 删除失败不影响主流程
-                }
+            } catch (Exception e) {
+                log.warn("[ZLM] 下载文件收尾失败: callId={} err={}",
+                        s.getCallId(), e.getMessage());
             }
-        } catch (Exception e) {
-            log.warn("[ZLM] 下载文件收尾失败: callId={} err={}",
-                    s.getCallId(), e.getMessage());
         }
     }
 

@@ -152,6 +152,14 @@ app:
   # HLS 切片输出目录（ffmpeg 转码产物，页面通过 /hls/** 访问）
   hls-dir: ./hls
 
+  # 媒体产物磁盘保留：定时清理 downloads(下载 MP4) 与 hls(切片) 中
+  # 修改时间超过 max-age-days 的文件（含 .part 残留）。正在写入的文件
+  # mtime 持续更新不会被误删；enabled 置 false 可关闭清理
+  retention:
+    enabled: true
+    max-age-days: 7
+    sweep-interval-hours: 6
+
   # 页面登录鉴权：仅保护管理页面（index/live/playback/voice.html），
   # 不影响 /api/** 内部接口与 /api/v1/** Open API（后者由 sip.openapi 的 X-API-Key 独立鉴权）
   auth:

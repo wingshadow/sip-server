@@ -536,6 +536,10 @@ public class DeviceController {
         m.put("payloadType", s.getPayloadType());
         m.put("localPort", s.getLocalPort());
         m.put("packetsSent", s.getPacketsSent());
+        // 双向对讲验收快照（0=数字静音）：上行=浏览器采集采样峰值、下行=设备解码峰值。
+        // 只读 peek 不清零，不影响约 1s 周期的电平日志统计
+        m.put("upstreamPeak", s.peekUpstreamPeak());
+        m.put("downstreamPeak", s.peekDownstreamPeak());
         m.put("createTime", s.getCreateTime());
         m.put("talkStartTime", s.getTalkStartTime());
         if (s.getCallId() != null) {
@@ -552,7 +556,7 @@ public class DeviceController {
      *
      * <p>body: {@code {"action":"pause|resume|scale|seek", "speed":2.0, "startTime":"..."}}
      * <ul>
-     *   <li>仅 local 模式的回放会话；zlm 模式会话 Dialog 由 ZlmMediaService 托管，会明确拒绝</li>
+     *   <li>local 与 zlm 模式均支持（控制是纯 SIP INFO→设备信令，与媒体面无关）</li>
      *   <li>seek 的 startTime 须落在回放区间内（ISO 或 epoch 秒）</li>
      * </ul>
      */

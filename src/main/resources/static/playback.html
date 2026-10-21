@@ -479,14 +479,7 @@
             }
         }
 
-        const disabled = isZlmMode();
-        document.querySelectorAll('#pbCtlBar .btn').forEach(b=>{
-            b.disabled = disabled;
-        });
-
-        if(disabled){
-            $('pbCtlInfo').textContent = 'zlm 模式暂不支持回放控制（Dialog 由 ZLMediaKit 托管），请切换 local 媒体模式';
-        }else if(pbRange){
+        if(pbRange){
             $('pbCtlInfo').textContent = '回放区间 '+formatEpoch(pbRange.start)+' ~ '+formatEpoch(pbRange.end)+
                 ' · 当前 '+pbScaleCurrent+'x';
         }else{

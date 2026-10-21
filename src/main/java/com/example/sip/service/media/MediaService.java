@@ -735,10 +735,9 @@ public class MediaService {
      */
     public Map<String, Object> playbackControl(String deviceId, String channelId,
                                                String action, double speed, long seekStart) {
-        if (mediaProps.isZlm()) {
-            throw new IllegalStateException(
-                    "zlm 模式暂不支持回放控制，请使用 local 媒体模式（Dialog 由 ZlmMediaService 托管）");
-        }
+        // 回放控制是纯 SIP INFO→设备信令（MANSRTSP），与媒体面（local 自研收流
+        // 或 ZLM 收流）无关；ZLM 会话同样带 deviceHost/Port（BYE 同源），
+        // 且 startInternal 已存 playback 区间，resume/seek 可用
         StreamSession s = getSession(deviceId, channelId);
         if (s == null) {
             throw new IllegalStateException("会话不存在: " + deviceId + ":" + channelId);
@@ -888,29 +887,31 @@ public class MediaService {
             return bc;
         }
 
+        // 等待媒体就绪：仅依赖会话状态，绝不持有 flvBroadcasts 锁——
+        // 否则新会话建流期间（最长 8s）全局锁被占用，其他会话的 FLV
+        // 获取会被串行阻塞
+        long deadline = System.currentTimeMillis() + 8_000;
+        while (s.getState() != StreamSession.State.PLAYING
+                && s.getState() != StreamSession.State.STOPPED
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(200);
+        }
+
+        if (s.getState() == StreamSession.State.STOPPED) {
+            throw new IllegalStateException("会话已停止: " + s.getCallId());
+        }
+
+        if (s.getState() != StreamSession.State.PLAYING) {
+            throw new IllegalStateException("等待媒体就绪超时: " + s.getCallId());
+        }
+
+        // 就绪后创建广播必须互斥（防并发对同一会话重复包装 ffmpeg stdout）
         synchronized (flvBroadcasts) {
             bc = flvBroadcasts.get(s.getCallId());
-            if (bc != null) {
-                return bc;
+            if (bc == null) {
+                bc = new FlvBroadcast(s, s.getFfmpeg().getInputStream());
+                flvBroadcasts.put(s.getCallId(), bc);
             }
-
-            long deadline = System.currentTimeMillis() + 8_000;
-            while (s.getState() != StreamSession.State.PLAYING
-                    && s.getState() != StreamSession.State.STOPPED
-                    && System.currentTimeMillis() < deadline) {
-                Thread.sleep(200);
-            }
-
-            if (s.getState() == StreamSession.State.STOPPED) {
-                throw new IllegalStateException("会话已停止: " + s.getCallId());
-            }
-
-            if (s.getState() != StreamSession.State.PLAYING) {
-                throw new IllegalStateException("等待媒体就绪超时: " + s.getCallId());
-            }
-            // 包住 ffmpeg stdout
-            bc = new FlvBroadcast(s, s.getFfmpeg().getInputStream());
-            flvBroadcasts.put(s.getCallId(), bc);
             return bc;
         }
     }

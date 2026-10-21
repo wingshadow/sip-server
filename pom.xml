@@ -55,6 +55,12 @@
             <version>1.18.30</version>
             <scope>provided</scope>
         </dependency>
+        <!-- 单元测试（D7）：JUnit5 + AssertJ，由 Spring Boot parent 管理版本 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

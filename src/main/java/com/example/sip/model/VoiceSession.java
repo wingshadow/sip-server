@@ -121,8 +121,11 @@ public class VoiceSession {
 
     private volatile String stopReason;
 
-    /** Broadcast MESSAGE 的 Call-ID */
+    /** 设备反向 INVITE 的 Call-ID */
     private volatile String broadcastCallId;
+
+    /** 平台广播 MESSAGE 自身的 Call-ID（用于匹配设备对该 MESSAGE 的响应，如 4xx 拒绝） */
+    private volatile String broadcastMessageCallId;
 
     /**
      * 是否为广播会话（广播 MESSAGE 发起）。
@@ -323,6 +326,16 @@ public class VoiceSession {
         int peak = upstreamPeak;
         upstreamPeak = 0;
         return peak;
+    }
+
+    /** 只读查看当前上行峰值（不清零；诊断接口快照用，不影响周期日志的 take 语义）。 */
+    public int peekUpstreamPeak() {
+        return upstreamPeak;
+    }
+
+    /** 只读查看当前下行解码峰值（不清零；诊断接口快照用）。 */
+    public int peekDownstreamPeak() {
+        return downstreamPeak;
     }
 
     /** 下行（设备→浏览器）解码帧计数（诊断用） */
@@ -558,6 +571,14 @@ public class VoiceSession {
 
     public void setBroadcastCallId(String broadcastCallId) {
         this.broadcastCallId = broadcastCallId;
+    }
+
+    public String getBroadcastMessageCallId() {
+        return broadcastMessageCallId;
+    }
+
+    public void setBroadcastMessageCallId(String broadcastMessageCallId) {
+        this.broadcastMessageCallId = broadcastMessageCallId;
     }
 
     public boolean isBroadcast() {

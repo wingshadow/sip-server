@@ -249,9 +249,11 @@ public class VoiceService {
             }
 
             try {
+                String msgCallId = SipRequestBuilder.newCallId();
+                s.setBroadcastMessageCallId(msgCallId);
                 sipServer.send(
                         new InetSocketAddress(d.getHost(), d.getPort()),
-                        SipRequestBuilder.broadcastMessage(props, s, broadcastChannelId));
+                        SipRequestBuilder.broadcastMessage(props, s, broadcastChannelId, msgCallId));
                 scheduleTimeout(s, BROADCAST_WAIT_MILLIS, "等待设备INVITE超时");
                 log.info("[VOICE] 语音广播已发起: key={} port={}", s.getKey(), port);
             } catch (Exception e) {
@@ -381,10 +383,12 @@ public class VoiceService {
 
             try {
                 // GB/T 28181 广播前置通知：设备据此进入广播接收状态
+                String msgCallId = SipRequestBuilder.newCallId();
+                s.setBroadcastMessageCallId(msgCallId);
                 sipServer.send(
                         new InetSocketAddress(d.getHost(), d.getPort()),
-                        SipRequestBuilder.broadcastMessage(props, s, channelId));
-                log.info("[VOICE] 广播MESSAGE已发送: key={}", s.getKey());
+                        SipRequestBuilder.broadcastMessage(props, s, channelId, msgCallId));
+                log.info("[VOICE] 广播MESSAGE已发送: key={} msgCallId={}", s.getKey(), msgCallId);
 
                 sipServer.send(
                         new InetSocketAddress(d.getHost(), d.getPort()),
@@ -922,11 +926,19 @@ public class VoiceService {
 
     /** 广播 MESSAGE 的响应（设备拒绝广播时）。 */
     public void handleBroadcastResponse(String callId, int statusCode, String reason) {
+        // 响应的 Call-ID 必然等于 MESSAGE 的 Call-ID（broadcastMessageCallId）；
+        // broadcastCallId（设备反向 INVITE）仅作兜底兼容
         VoiceSession s = sessions.values().stream()
-                .filter(v -> callId.equals(v.getBroadcastCallId()))
+                .filter(v -> callId.equals(v.getBroadcastMessageCallId())
+                        || callId.equals(v.getBroadcastCallId()))
                 .findFirst()
                 .orElse(null);
-        if (s != null && statusCode >= 400) {
+        if (s == null) {
+            // 匹配不到仅记录：MESSAGE 响应到达早于会话登记等时序场景
+            log.debug("[VOICE] 广播响应无匹配会话: callId={} status={}", callId, statusCode);
+            return;
+        }
+        if (statusCode >= 400) {
             log.warn("[VOICE] 设备拒绝广播: key={} status={} reason={}",
                     s.getKey(), statusCode, reason);
             doStop(s, "设备拒绝广播: " + statusCode);

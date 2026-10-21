@@ -797,7 +797,8 @@ public final class SipRequestBuilder {
      */
     public static byte[] broadcastMessage(SipServerProperties props,
                                           VoiceSession session,
-                                          String targetId) {
+                                          String targetId,
+                                          String callId) {
         String toUri = deviceUri(
                 session.getDeviceHost(), session.getDevicePort(), session.getChannelId());
         String fromUri = serverUri(props);
@@ -821,8 +822,8 @@ public final class SipRequestBuilder {
                 .append(";rport;branch=").append(newBranch()).append("\r\n");
         sb.append("From: <").append(fromUri).append(">;tag=")
                 .append(newTag()).append("\r\n");
-        sb.append("To: <").append(toUri).append("\r\n");
-        sb.append("Call-ID: ").append(newCallId()).append("\r\n");
+        sb.append("To: <").append(toUri).append(">\r\n");
+        sb.append("Call-ID: ").append(callId).append("\r\n");
         sb.append("CSeq: 20 MESSAGE\r\n");
         sb.append("Content-Type: Application/MANSCDP+xml\r\n");
         sb.append("Content-Length: ").append(bodyBytes.length).append("\r\n\r\n");
